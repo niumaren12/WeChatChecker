@@ -1,0 +1,9 @@
+{
+  "wechat_path": "C:\\Program Files (x86)\\Tencent\\WeChat\\WeChat.exe",
+  "ids_file": "wechat_ids.txt",
+  "batch_size": 9,
+  "batch_interval_min": 30,
+  "batch_interval_max": 50,
+  "account_interval_min": 3,
+  "account_interval_max": 5
+}

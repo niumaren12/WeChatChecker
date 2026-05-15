@@ -1,0 +1,6 @@
+# 微信账号检查工具 - 依赖清单
+# 安装: pip install -r requirements.txt
+
+uiautomation>=2.0.17
+psutil>=5.9.0
+pyinstaller>=6.0.0
