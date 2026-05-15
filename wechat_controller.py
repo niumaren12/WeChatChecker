@@ -71,6 +71,50 @@ def _set_clipboard_text(text):
     raise OSError(last_err or "设置剪贴板失败")
 
 
+# ---------- Win32 键盘模拟（不依赖 uiautomation COM 线程）----------
+
+# 虚拟键码表（只定义用到的）
+_VK = {
+    "ctrl":   0x11,
+    "f":      0x46,
+    "a":      0x41,
+    "v":      0x56,
+    "delete": 0x2E,
+    "escape": 0x1B,
+}
+_KEYEVENTF_KEYUP = 0x0002
+
+
+def _keydown(vk):
+    """按下键"""
+    ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+
+
+def _keyup(vk):
+    """释放键"""
+    ctypes.windll.user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
+
+
+def _send_hotkey(mod_vk, key_vk):
+    """发送 Ctrl+某键 组合"""
+    _keydown(mod_vk)
+    time.sleep(0.03)
+    _keydown(key_vk)
+    time.sleep(0.03)
+    _keyup(key_vk)
+    time.sleep(0.03)
+    _keyup(mod_vk)
+    time.sleep(0.05)
+
+
+def _press_key(vk):
+    """按下并释放单键（Delete、Esc 等）"""
+    _keydown(vk)
+    time.sleep(0.03)
+    _keyup(vk)
+    time.sleep(0.05)
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -213,14 +257,14 @@ class WeChatController:
     def focus_search_box(self):
         """
         按 Ctrl+F 激活搜索框
-        auto.SendKeys 发到前台窗口，依赖 activate_window 的 SetActive 保证微信在前台
+        用 Win32 keybd_event，不依赖 uiautomation COM 线程
         """
         if not UIA_AVAILABLE:
             logger.error("uiautomation 不可用")
             return False
 
         try:
-            auto.SendKeys("{Ctrl}f")
+            _send_hotkey(_VK["ctrl"], _VK["f"])
             time.sleep(1.5)
             logger.debug("已按下 Ctrl+F 激活搜索框")
             return True
@@ -231,34 +275,27 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        优先用 Win32 API 设剪贴板后 Ctrl+V，失败则回退到清理后的 SendKeys
+        用 Win32 剪贴板 API + keybd_event Ctrl+V 粘贴，不依赖 uiautomation COM
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            # auto.SendKeys 发到前台窗口，依赖 activate_window 保证微信在前台
             # 第1步: 全选 + 删除已有内容
             try:
-                auto.SendKeys("{Ctrl}a")
+                _send_hotkey(_VK["ctrl"], _VK["a"])
                 time.sleep(0.3)
-                auto.SendKeys("{Delete}")
+                _press_key(_VK["delete"])
                 time.sleep(0.3)
             except Exception as e:
                 logger.error(f"清空搜索框失败: {e}")
                 return False
 
-            # 第2步: 填入微信号（剪贴板优先，SendKeys 兜底）
-            try:
-                _set_clipboard_text(wechat_id)
-                time.sleep(0.2)
-                auto.SendKeys("{Ctrl}v")
-                logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
-            except Exception as e:
-                logger.warning(f"剪贴板方式失败: {e}，回退到 SendKeys")
-                # 回退：转义花括号后直接 SendKeys
-                safe_id = wechat_id.replace("{", "{{}").replace("}", "{}}")
-                auto.SendKeys(safe_id)
+            # 第2步: 填入微信号（剪贴板 + Ctrl+V）
+            _set_clipboard_text(wechat_id)
+            time.sleep(0.2)
+            _send_hotkey(_VK["ctrl"], _VK["v"])
+            logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
 
             time.sleep(0.5)
             logger.debug(f"已输入微信号: {wechat_id}")
@@ -526,7 +563,7 @@ class WeChatController:
                 pass
 
             # 兜底：ESC
-            auto.SendKeys("{Esc}")
+            _press_key(_VK["escape"])
             time.sleep(0.5)
             logger.debug("已关闭弹窗(ESC)")
         except Exception as e:
@@ -537,9 +574,9 @@ class WeChatController:
         if not UIA_AVAILABLE:
             return
         try:
-            auto.SendKeys("{Ctrl}a")
+            _send_hotkey(_VK["ctrl"], _VK["a"])
             time.sleep(0.2)
-            auto.SendKeys("{Delete}")
+            _press_key(_VK["delete"])
             time.sleep(0.3)
             logger.debug("搜索框已清空")
         except Exception as e:
