@@ -410,8 +410,10 @@ class WeChatController:
             # 等待搜索结果下拉列表出现
             time.sleep(1.5)
 
-            # 按 ↓ 键选择第一个下拉项（通常是"网络查找手机/QQ号: {微信号}"）
-            _press_key(0x28)  # VK_DOWN
+            # 按 2 次 ↓：第 1 次跳过"搜索网络结果"，第 2 次选到"网络查找手机/QQ号"
+            _press_key(0x28)  # VK_DOWN → 跳过"搜索网络结果"
+            time.sleep(0.2)
+            _press_key(0x28)  # VK_DOWN → 选中"网络查找手机/QQ号"下的微信号
             time.sleep(0.3)
 
             # 按 Enter 确认选择
