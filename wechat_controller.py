@@ -444,51 +444,40 @@ class WeChatController:
             # 等待弹窗出现（最多等 3 秒）
             time.sleep(0.5)
 
-            # 查找弹窗 - 尝试多种可能的窗口标题
+            # 查找弹窗 — 三级搜索
             popup = None
-            popup_titles = ["添加朋友", "详细信息", "联系人", "搜索",
-                           "朋友验证", "新的朋友", "添加",
-                           "WeChat", "微信"]  # 兜底
 
+            # 第1级：搜索较深层的独立窗口（searchDepth=3）
+            popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
             for title in popup_titles:
                 try:
-                    w = auto.WindowControl(Name=title, searchDepth=1)
-                    if w.Exists(maxSearchSeconds=0.5):
-                        # 排除主窗口本身
-                        if title == "微信" or title == "WeChat":
-                            # 检查是不是新弹窗（不是主窗口）
-                            try:
-                                if w.ClassName == "WeChatMainWndForPC":
-                                    continue
-                            except Exception:
-                                pass
+                    w = auto.WindowControl(Name=title, searchDepth=3)
+                    if w.Exists(maxSearchSeconds=0.8):
                         popup = w
-                        logger.info(f"找到弹窗: {title}")
+                        logger.info(f"找到弹窗(深层窗口): {title}")
                         break
                 except Exception:
                     continue
 
+            # 第2级：在微信主窗口内搜索面板（PaneControl）
+            if popup is None and self.wechat_window:
+                for title in popup_titles:
+                    try:
+                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
+                        if pane.Exists(maxSearchSeconds=0.8):
+                            popup = pane
+                            logger.info(f"找到弹窗(主窗口内面板): {title}")
+                            break
+                    except Exception:
+                        continue
+
+            # 第3级：兜底用微信主窗口本身作为搜索范围
             if popup is None:
-                # 最后尝试：找所有顶层窗口，排除已知的主窗口
-                try:
-                    all_windows = auto.GetRootControl().GetChildren()
-                    for w in all_windows:
-                        if isinstance(w, auto.WindowControl):
-                            try:
-                                cls = w.ClassName
-                                if cls and cls not in ["WeChatMainWndForPC", "ChatWnd"]:
-                                    name = w.Name
-                                    if name and len(name) > 0 and name != "微信":
-                                        popup = w
-                                        logger.info(f"通过遍历找到弹窗: {name} (class={cls})")
-                                        break
-                            except Exception:
-                                continue
-                except Exception as e:
-                    logger.debug(f"遍历窗口失败: {e}")
+                logger.warning("未找到独立弹窗，使用微信主窗口作为搜索范围")
+                popup = self.wechat_window if self.wechat_window else auto.GetRootControl()
 
             if popup is None:
-                logger.warning("未找到任何弹窗")
+                logger.warning("未找到任何弹窗或微信窗口")
                 return ("not_found", "")
 
             # 不激活弹窗，避免抢前台
