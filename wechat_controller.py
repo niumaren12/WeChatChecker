@@ -356,41 +356,47 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        优先尝试 uiautomation 直接设置 EditControl 的值，失败则用 keybd_event + SendInput
+        方法A: SendInput 逐字符 → 方法B: 剪贴板 + Ctrl+V（base64 安全编码）
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            # 方法A: 尝试找到搜索框 EditControl 直接设置文本值
-            try:
-                search_root = self.wechat_window if self.wechat_window else auto
-                edit = search_root.EditControl(searchDepth=10)
-                if edit.Exists(maxSearchSeconds=0.5):
-                    # 清空已有内容
-                    edit.GetValuePattern().SetValue("")
-                    time.sleep(0.1)
-                    # 直接设置微信号
-                    edit.GetValuePattern().SetValue(wechat_id)
-                    time.sleep(0.3)
-                    logger.debug(f"已通过 SetValue 输入微信号: {wechat_id}")
-                    return True
-            except Exception as e:
-                logger.debug(f"直接 SetValue 失败: {e}，回退到键盘模拟")
-
-            # 方法B: 键盘模拟 — keybd_event 清空 + SendInput 逐字符输入
+            # 清空搜索框已有内容
             _send_hotkey(_VK["ctrl"], _VK["a"])
             time.sleep(0.2)
             _press_key(_VK["delete"])
-            time.sleep(0.3)
+            time.sleep(0.2)
+
+            # 方法A: SendInput 逐字符输入
             _type_text(wechat_id)
             time.sleep(0.3)
-
-            logger.debug(f"已通过键盘模拟输入微信号: {wechat_id}")
+            logger.debug(f"已通过 SendInput 输入微信号: {wechat_id}")
             return True
+
         except Exception as e:
-            logger.error(f"输入微信号失败: {e}")
-            return False
+            logger.debug(f"SendInput 失败: {e}，回退到剪贴板")
+
+            # 方法B: base64 + PowerShell 剪贴板（安全，无注入风险）
+            try:
+                import base64
+                encoded = base64.b64encode(wechat_id.encode('utf-16-le')).decode('ascii')
+                ps_cmd = (
+                    f'$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("{encoded}"));'
+                    f'[Windows.Clipboard]::SetText($s)'
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True, timeout=10
+                )
+                time.sleep(0.2)
+                _send_hotkey(_VK["ctrl"], _VK["v"])
+                time.sleep(0.3)
+                logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
+                return True
+            except Exception as e2:
+                logger.error(f"所有输入方式均失败: SendInput={e}, 剪贴板={e2}")
+                return False
 
     def click_dropdown_item(self):
         """
