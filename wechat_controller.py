@@ -494,77 +494,71 @@ class WeChatController:
             # 不激活弹窗，避免抢前台
             time.sleep(0.5)
 
-            # 收集弹窗控件树（depth 限制防止无限递归）
-            all_ctrls = []
-            child_count = 0
+            # 获取弹窗屏幕位置范围
             try:
-                def collect_ctrls(ctrl, depth=0):
-                    nonlocal child_count
-                    if depth > 15:
-                        return
-                    try:
-                        name = ctrl.Name
-                        ctrl_type = type(ctrl).__name__
-                        all_ctrls.append(f"  {'  '*depth}{ctrl_type}: [{name}]")
-                        children = ctrl.GetChildren()
-                        child_count += len(children)
-                        for child in children:
-                            collect_ctrls(child, depth + 1)
-                    except Exception:
-                        pass
-                collect_ctrls(popup)
-            except Exception as e:
-                logger.warning(f"控件树收集异常: {e}")
+                popup_rect = popup.BoundingRectangle  # (left, top, right, bottom)
+                logger.info(f"弹窗位置: left={popup_rect[0]}, top={popup_rect[1]}, "
+                            f"right={popup_rect[2]}, bottom={popup_rect[3]}")
+            except Exception:
+                logger.warning("无法获取弹窗位置")
+                popup_rect = None
 
-            logger.info(f"=== 弹窗控件树 (共{len(all_ctrls)}个控件, {child_count}个子级) ===")
-            for line in all_ctrls[:30]:  # 最多显示前30个
-                logger.info(line)
-            if len(all_ctrls) > 30:
-                logger.info(f"  ... 省略 {len(all_ctrls)-30} 个控件")
-            logger.info("=== 控件树结束 ===")
-
-            # CEF 应用内控件可能不可见，以"添加到通讯录"按钮为主判据
+            # 从桌面根控件全局遍历，筛选弹窗范围内的控件
+            found_ctrls = []  # (ctrl_type, name, rect)
             has_add_button = False
             nickname_text = ""
 
-            # 优先检测"添加到通讯录"按钮（CEF 中最可能暴露的 UIA 元素）
-            for btn_name in ["添加到通讯录", "添加", "发消息"]:
+            if popup_rect:
+                def collect_in_rect(ctrl, depth=0):
+                    nonlocal has_add_button, nickname_text
+                    if depth > 20:
+                        return
+                    try:
+                        ctrl_rect = ctrl.BoundingRectangle
+                        # 检查控件位置是否在弹窗范围内（有交集即可）
+                        if (ctrl_rect[2] > popup_rect[0] and ctrl_rect[0] < popup_rect[2] and
+                            ctrl_rect[3] > popup_rect[1] and ctrl_rect[1] < popup_rect[3]):
+                            ctrl_type = type(ctrl).__name__
+                            name = ctrl.Name
+                            found_ctrls.append((ctrl_type, name, ctrl_rect))
+
+                            # 检测"添加到通讯录"按钮
+                            if "Button" in ctrl_type and name in ["添加到通讯录", "添加", "发消息"]:
+                                has_add_button = True
+                                logger.info(f"全局遍历找到按钮: {name}")
+
+                            # 检测候选昵称
+                            if not nickname_text and ("Text" in ctrl_type or "Edit" in ctrl_type):
+                                if name and name not in self.NICKNAME_EXCLUDE and 1 <= len(name) <= 20:
+                                    nickname_text = name
+                                    logger.info(f"全局遍历找到候选昵称: {name}")
+
+                        # 继续遍历子控件
+                        for child in ctrl.GetChildren():
+                            collect_in_rect(child, depth + 1)
+                    except Exception:
+                        pass
+
                 try:
-                    btn = popup.ButtonControl(Name=btn_name, searchDepth=12)
-                    if btn.Exists(maxSearchSeconds=0.5):
-                        has_add_button = True
-                        logger.info(f"找到按钮: {btn_name}")
-                        break
-                except Exception:
-                    continue
+                    collect_in_rect(auto.GetRootControl())
+                except Exception as e:
+                    logger.warning(f"全局遍历异常: {e}")
 
-            # 尝试从控件树中提取候选昵称文本
-            text_prefixes = ["TextControl: [", "EditControl: [", "ListItemControl: ["]
-            try:
-                for ctrl in all_ctrls:
-                    ctrl_line = ctrl.strip()
-                    for prefix in text_prefixes:
-                        if ctrl_line.startswith(prefix):
-                            text = ctrl_line[len(prefix):-1]
-                            if text and text not in self.NICKNAME_EXCLUDE and 1 <= len(text) <= 20:
-                                nickname_text = text
-                                logger.info(f"从控件树找到候选昵称: {nickname_text}")
-                                break
-            except Exception:
-                pass
+            # 输出找到的控件列表
+            logger.info(f"=== 弹窗范围内控件 (共{len(found_ctrls)}个) ===")
+            for ctrl_type, name, rect in found_ctrls[:40]:
+                logger.info(f"  {ctrl_type}: [{name}] @ ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})")
+            if len(found_ctrls) > 40:
+                logger.info(f"  ... 省略 {len(found_ctrls)-40} 个")
+            logger.info("=== 控件列表结束 ===")
 
-            logger.info(
-                f"弹窗检测结果: 添加按钮={has_add_button} 候选昵称={nickname_text} "
-                f"总控件数={len(all_ctrls)}"
-            )
-
-            # 判断逻辑："添加到通讯录"按钮存在 → 正常
+            # 判断逻辑
+            logger.info(f"弹窗检测: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)}")
             if has_add_button:
                 return ("normal", nickname_text or "(未识别昵称)")
-            # 弹窗存在但无按钮 → 可能是异常号或 CEF 兼容性
-            elif len(all_ctrls) >= 3:
-                logger.warning("弹窗存在但未找到按钮，CEF兼容性问题，默认视为正常")
-                return ("normal", "(CEF兼容模式)")
+            elif len(found_ctrls) >= 2:
+                logger.warning("弹窗存在但未找到按钮，默认视为正常")
+                return ("normal", "(CEF兼容)")
             else:
                 return ("abnormal", "弹窗控件极少，可能异常")
 
