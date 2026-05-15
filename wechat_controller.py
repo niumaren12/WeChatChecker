@@ -502,14 +502,25 @@ class WeChatController:
             # 不激活弹窗，避免抢前台
             time.sleep(0.5)
 
-            # 获取弹窗屏幕位置范围
+            # 获取弹窗屏幕位置范围（优先 Win32 API，更可靠）
+            popup_rect = None
             try:
-                popup_rect = popup.BoundingRectangle  # (left, top, right, bottom)
-                logger.info(f"弹窗位置: left={popup_rect[0]}, top={popup_rect[1]}, "
-                            f"right={popup_rect[2]}, bottom={popup_rect[3]}")
+                hwnd = popup.NativeWindowHandle
+                if hwnd:
+                    rect = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    popup_rect = (rect.left, rect.top, rect.right, rect.bottom)
+                    _glog(f"弹窗位置(Win32): left={popup_rect[0]} top={popup_rect[1]} "
+                          f"right={popup_rect[2]} bottom={popup_rect[3]}")
             except Exception:
-                logger.warning("无法获取弹窗位置")
-                popup_rect = None
+                pass
+
+            if popup_rect is None:
+                try:
+                    popup_rect = popup.BoundingRectangle
+                    _glog(f"弹窗位置(UIA): {popup_rect}")
+                except Exception as e:
+                    _glog(f"无法获取弹窗位置: {e}")
 
             # 从桌面根控件全局遍历，筛选弹窗范围内的控件
             found_ctrls = []  # (ctrl_type, name, rect)
