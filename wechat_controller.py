@@ -186,11 +186,22 @@ class WeChatController:
                 logger.error("找不到微信主窗口")
                 return False
 
-            # 必须 SetActive 让微信成为前台窗口，SendKeys 才能正确发送
-            window.SetActive()
-            time.sleep(0.5)
+            # 用 Win32 API 强制激活微信窗口为前台窗口
+            hwnd = window.NativeWindowHandle
+            if hwnd:
+                # 先恢复窗口（如果最小化了）
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                # BringWindowToTop + SetForegroundWindow 组合确保前台
+                ctypes.windll.user32.BringWindowToTop(hwnd)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                time.sleep(0.3)
+            else:
+                # 回退到 uiautomation 的 SetActive
+                window.SetActive()
+                time.sleep(0.3)
+
             self.wechat_window = window
-            logger.debug("微信窗口已激活")
+            logger.debug("微信窗口已激活为前台窗口")
             return True
 
         except Exception as e:
