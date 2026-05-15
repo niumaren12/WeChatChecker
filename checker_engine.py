@@ -98,31 +98,46 @@ class CheckerEngine:
         self.total_accounts = len(ids)
         self.checked_accounts = []
 
+        # 一次性快照配置，避免子线程读取时被主线程并发修改
+        config_snapshot = {
+            "batch_size": self.config.get("batch_size", 9),
+            "batch_interval_min": self.config.get("batch_interval_min", 30),
+            "batch_interval_max": self.config.get("batch_interval_max", 50),
+            "account_interval_min": self.config.get("account_interval_min", 3),
+            "account_interval_max": self.config.get("account_interval_max", 5),
+            "max_rounds": self.config.get("max_rounds", 100),
+        }
+
         # 在子线程中运行检查
         thread = threading.Thread(
             target=self._run_check_loop,
-            args=(ids,),
+            args=(ids, config_snapshot),
             daemon=True,
             name="CheckerThread",
         )
         thread.start()
         self._emit_log(f"检查启动，共 {len(ids)} 个微信号")
 
-    def _run_check_loop(self, all_ids):
+    def _run_check_loop(self, all_ids, cfg):
         """
         主检查循环（在子线程中运行）
         支持多轮循环，每批最多 batch_size 个
+
+        Args:
+            all_ids: 微信号列表
+            cfg: 配置快照字典，避免与主线程并发读写
         """
-        batch_size = self.config.get("batch_size", 9)
-        bi_min = self.config.get("batch_interval_min", 30)
-        bi_max = self.config.get("batch_interval_max", 50)
-        ai_min = self.config.get("account_interval_min", 3)
-        ai_max = self.config.get("account_interval_max", 5)
+        batch_size = cfg["batch_size"]
+        bi_min = cfg["batch_interval_min"]
+        bi_max = cfg["batch_interval_max"]
+        ai_min = cfg["account_interval_min"]
+        ai_max = cfg["account_interval_max"]
+        max_rounds = cfg["max_rounds"]
 
         round_num = 0
 
         try:
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and round_num < max_rounds:
                 round_num += 1
                 self._emit_log(f"====== 第 {round_num} 轮检查开始 ======")
                 self._emit_status(f"检查中 - 第{round_num}轮")
@@ -218,6 +233,11 @@ class CheckerEngine:
                         f"====== 第 {round_num} 轮完成，共检查 "
                         f"{len(self.checked_accounts)} 个号 ======"
                     )
+
+                    # 最后一轮不等待，直接结束
+                    if round_num >= max_rounds:
+                        self._emit_log("已达最大轮数，检查结束")
+                        break
 
                     # 进入下一轮前等待
                     wait_min = random.uniform(bi_min, bi_max)

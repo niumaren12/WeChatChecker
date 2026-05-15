@@ -159,6 +159,14 @@ class WeChatCheckerApp:
         ttk.Spinbox(
             param_frame, from_=0, to=30,
             textvariable=self.ai_max_var, width=4
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        # 最大轮数
+        ttk.Label(param_frame, text="最大轮数:").pack(side=tk.LEFT)
+        self.max_rounds_var = tk.StringVar(value="100")
+        ttk.Spinbox(
+            param_frame, from_=1, to=9999,
+            textvariable=self.max_rounds_var, width=6
         ).pack(side=tk.LEFT)
 
         # ---- 控制按钮区域 ----
@@ -244,6 +252,7 @@ class WeChatCheckerApp:
         self.bi_max_var.set(str(self.config.get("batch_interval_max", 50)))
         self.ai_min_var.set(str(self.config.get("account_interval_min", 3)))
         self.ai_max_var.set(str(self.config.get("account_interval_max", 5)))
+        self.max_rounds_var.set(str(self.config.get("max_rounds", 100)))
 
     def _save_ui_to_config(self):
         """将界面值写入配置文件"""
@@ -264,6 +273,11 @@ class WeChatCheckerApp:
         try:
             self.config.set("account_interval_min", int(self.ai_min_var.get()))
             self.config.set("account_interval_max", int(self.ai_max_var.get()))
+        except ValueError:
+            pass
+
+        try:
+            self.config.set("max_rounds", int(self.max_rounds_var.get()))
         except ValueError:
             pass
 
@@ -311,11 +325,10 @@ class WeChatCheckerApp:
 
     def _on_engine_abnormal(self, wechat_id, reason):
         """
-        引擎异常回调
-        返回 True 表示停止检查，False 继续
+        引擎异常回调（在检查线程中被调用）
+        弹窗提示用户，超时 60 秒无人操作则自动停止
+        返回 True 表示停止检查
         """
-        # 使用事件来同步等待用户操作
-        result = [False]  # 默认停止
         event = threading.Event()
 
         def show_alert():
@@ -331,8 +344,7 @@ class WeChatCheckerApp:
             except Exception:
                 pass
 
-            # 置顶弹窗
-            ret = messagebox.showerror(
+            messagebox.showerror(
                 "⚠ 账号异常警告",
                 msg,
                 parent=self.root,
@@ -340,8 +352,8 @@ class WeChatCheckerApp:
             event.set()
 
         self.root.after(0, show_alert)
-        event.wait()  # 等待用户关闭弹窗
-        return True  # 异常时停止检查
+        event.wait()  # 阻塞等待用户手动关闭弹窗，确保人看到异常
+        return True  # 异常时总是停止检查
 
     # ==================== UI 更新方法 ====================
 
@@ -439,5 +451,14 @@ class WeChatCheckerApp:
 
 # ==================== 入口 ====================
 if __name__ == "__main__":
+    # 平台检查：非 Windows 环境下 uiautomation 不可用
+    if sys.platform != "win32":
+        import tkinter.messagebox as _mb
+        _mb.showwarning(
+            "平台不兼容",
+            "此工具仅支持 Windows 系统。\n"
+            "当前系统不是 Windows，微信自动化功能无法使用。\n"
+            "程序将以预览模式启动，但无法实际操作微信。",
+        )
     app = WeChatCheckerApp()
     app.run()

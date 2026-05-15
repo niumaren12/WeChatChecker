@@ -4,6 +4,7 @@
 """
 import json
 import os
+from logger_setup import logger
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -15,6 +16,7 @@ DEFAULT_CONFIG = {
     "batch_interval_max": 50,
     "account_interval_min": 3,
     "account_interval_max": 5,
+    "max_rounds": 100,
 }
 
 
@@ -36,7 +38,7 @@ class ConfigManager:
                     if key not in self.config:
                         self.config[key] = val
             except (json.JSONDecodeError, IOError) as e:
-                print(f"[配置] 读取配置文件失败: {e}，使用默认配置")
+                logger.error(f"读取配置文件失败: {e}，使用默认配置")
                 self.config = DEFAULT_CONFIG.copy()
         else:
             self.config = DEFAULT_CONFIG.copy()
@@ -48,7 +50,7 @@ class ConfigManager:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
         except IOError as e:
-            print(f"[配置] 写入配置文件失败: {e}")
+            logger.error(f"写入配置文件失败: {e}")
 
     def get(self, key, default=None):
         return self.config.get(key, default)
@@ -101,10 +103,12 @@ class ConfigManager:
     def load_ids(filepath):
         """
         读取微信号列表文件
-        每行一个微信号，跳过空行和 # 注释行
-        返回微信号列表
+        每行一个微信号，跳过空行和 # 注释行，自动去重（保持顺序）
+        返回 (微信号列表, 错误信息)
         """
         ids = []
+        seen = set()
+        total_lines = 0
         if not os.path.exists(filepath):
             return ids, f"文件不存在: {filepath}"
         try:
@@ -112,9 +116,15 @@ class ConfigManager:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):
-                        ids.append(line)
+                        total_lines += 1
+                        if line not in seen:
+                            seen.add(line)
+                            ids.append(line)
             if not ids:
                 return ids, "文件中没有有效的微信号"
+            dup_count = total_lines - len(ids)
+            if dup_count > 0:
+                logger.info(f"微信号列表已去重，跳过 {dup_count} 个重复项")
             return ids, ""
         except IOError as e:
             return ids, f"读取文件失败: {e}"

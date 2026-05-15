@@ -5,5 +5,6 @@
   "batch_interval_min": 30,
   "batch_interval_max": 50,
   "account_interval_min": 3,
-  "account_interval_max": 5
+  "account_interval_max": 5,
+  "max_rounds": 100
 }

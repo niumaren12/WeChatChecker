@@ -2,6 +2,7 @@
 微信自动化操作模块
 基于 uiautomation 操控微信 PC 客户端
 """
+import ctypes
 import time
 import random
 import subprocess
@@ -19,6 +20,27 @@ except ImportError:
     logger.warning("uiautomation 未安装，将使用模拟方案（仅用于开发环境测试）")
 
 
+def _set_clipboard_text(text):
+    """通过 Win32 API 设置剪贴板文本，避免 shell 命令注入"""
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+
+    ctypes.windll.user32.OpenClipboard(0)
+    ctypes.windll.user32.EmptyClipboard()
+
+    wchar_size = ctypes.sizeof(ctypes.c_wchar)
+    buf_size = (len(text) + 1) * wchar_size
+    h_mem = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, buf_size)
+    p_mem = ctypes.windll.kernel32.GlobalLock(h_mem)
+
+    buf = ctypes.create_unicode_buffer(text)
+    ctypes.memmove(p_mem, buf, buf_size)
+
+    ctypes.windll.kernel32.GlobalUnlock(h_mem)
+    ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, h_mem)
+    ctypes.windll.user32.CloseClipboard()
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -26,6 +48,13 @@ class WeChatController:
     WECHAT_PROCESS = "WeChat.exe"
     # 微信主窗口标题可能包含的文字
     WECHAT_WINDOW_TITLE = "微信"
+
+    # 弹窗中除昵称外可能出现的固定标签文字（用于昵称兜底检测时排除）
+    NICKNAME_EXCLUDE = frozenset([
+        "添加朋友", "微信号", "标签", "来源", "地区",
+        "个性签名", "添加到通讯录", "发消息", "音视频通话",
+        "微信", "WeChat", "昵称",
+    ])
 
     def __init__(self, wechat_path):
         self.wechat_path = wechat_path
@@ -164,7 +193,7 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        用剪贴板粘贴替代逐字输入，更可靠
+        用 Win32 API 设置剪贴板后 Ctrl+V 粘贴，无 shell 注入风险
         """
         if not UIA_AVAILABLE:
             return False
@@ -178,12 +207,10 @@ class WeChatController:
             sk("{Delete}")
             time.sleep(0.3)
 
-            # 用剪贴板粘贴微信号（避免 SendKeys 逐字输入错位）
-            import subprocess
-            # 设置剪贴板内容
-            p = subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{wechat_id}'"],
-                               capture_output=True, timeout=5)
+            # 通过 Win32 API 设置剪贴板，避免 PowerShell 命令注入
+            _set_clipboard_text(wechat_id)
             time.sleep(0.2)
+
             # Ctrl+V 粘贴
             sk("{Ctrl}v")
             time.sleep(0.5)
@@ -405,13 +432,14 @@ class WeChatController:
                 try:
                     for ctrl in popup.GetChildren():
                         if hasattr(ctrl, 'Name') and ctrl.Name:
-                            exclude = ["添加朋友", "微信号", "标签", "来源", "地区",
-                                       "个性签名", "添加到通讯录", "发消息", "音视频通话"]
-                            if ctrl.Name not in exclude and len(ctrl.Name) <= 20:
-                                nickname_text = ctrl.Name
+                            name = ctrl.Name
+                            if name not in self.NICKNAME_EXCLUDE and len(name) <= 20:
+                                nickname_text = name
                                 has_nickname = True
                                 logger.debug(f"通过遍历找到昵称: {nickname_text}")
                                 break
+                            else:
+                                logger.debug(f"排除非昵称文本: [{name}]")
                 except Exception:
                     pass
 
