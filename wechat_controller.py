@@ -441,8 +441,8 @@ class WeChatController:
             return ("not_found", "")
 
         try:
-            # 等待弹窗出现（最多等 3 秒）
-            time.sleep(0.5)
+            # 等待弹窗出现（CEF 面板加载较慢）
+            time.sleep(2.0)
 
             # 查找弹窗 — 三级搜索
             popup = None
@@ -477,6 +477,18 @@ class WeChatController:
                 popup = self.wechat_window if self.wechat_window else auto.GetRootControl()
 
             if popup is None:
+                # 诊断：列出桌面所有顶层窗口
+                try:
+                    all_top = auto.GetRootControl().GetChildren()
+                    logger.warning(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
+                    for w in all_top[:15]:
+                        try:
+                            logger.warning(f"  [{w.ClassName}] Name='{w.Name}' "
+                                           f"Rect={w.BoundingRectangle}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 logger.warning("未找到任何弹窗或微信窗口")
                 return ("not_found", "")
 
