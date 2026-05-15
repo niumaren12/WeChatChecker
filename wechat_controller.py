@@ -400,71 +400,26 @@ class WeChatController:
 
     def click_dropdown_item(self):
         """
-        点击下拉框中的'网络查找手机/QQ号'项
-        只用 InvokePattern，搜索范围限定在微信窗口内
+        选择搜索下拉框中的'网络查找手机/QQ号'项
+        用键盘 ↓ + Enter 操作，不依赖查找 UI 控件
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            found = False
-            clicked_name = ""
+            # 等待搜索结果下拉列表出现
+            time.sleep(1.5)
 
-            # 等待下拉列表出现
-            time.sleep(1.0)
+            # 按 ↓ 键选择第一个下拉项（通常是"网络查找手机/QQ号: {微信号}"）
+            _press_key(0x28)  # VK_DOWN
+            time.sleep(0.3)
 
-            def invoke_item(item):
-                """只用 InvokePattern，不移动鼠标"""
-                try:
-                    pattern = item.GetInvokePattern()
-                    pattern.Invoke()
-                    return True
-                except Exception:
-                    logger.warning(f"InvokePattern 失败: {item.Name}")
-                    return False
+            # 按 Enter 确认选择
+            _press_key(0x0D)  # VK_RETURN
+            time.sleep(2.0)
 
-            # 确定搜索起点：优先从微信窗口内搜索
-            search_root = self.wechat_window if self.wechat_window else auto
-
-            # 方法1: 遍历 ListControl 的子项
-            try:
-                list_ctrl = search_root.ListControl(searchDepth=8)
-                if list_ctrl.Exists(maxSearchSeconds=1):
-                    items = list_ctrl.GetChildren()
-                    logger.info(f"下拉列表中有 {len(items)} 个子项")
-                    for item in items:
-                        name = item.Name
-                        logger.info(f"  下拉项: [{name}]")
-                        if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
-                            if invoke_item(item):
-                                found = True
-                                clicked_name = name
-                                logger.info(f"点击下拉项: {name}")
-                                break
-            except Exception as e:
-                logger.debug(f"遍历 ListControl 失败: {e}")
-
-            # 方法2: 直接按名称在微信窗口内查找
-            if not found:
-                for text in ["网络查找", "查找手机", "查找QQ"]:
-                    try:
-                        item = search_root.ListItemControl(Name=text, searchDepth=8)
-                        if item.Exists(maxSearchSeconds=0.5):
-                            if invoke_item(item):
-                                found = True
-                                clicked_name = text
-                                logger.info(f"点击下拉项(精确匹配): {text}")
-                                break
-                    except Exception:
-                        continue
-
-            if found:
-                logger.info(f"成功点击下拉项: {clicked_name}")
-                time.sleep(2.0)
-                return True
-            else:
-                logger.warning("未找到'网络查找'下拉项（搜索范围已限定在微信窗口内）")
-                return False
+            logger.info("已通过键盘 ↓ + Enter 选择下拉项")
+            return True
 
         except Exception as e:
             logger.error(f"点击下拉项失败: {e}")
