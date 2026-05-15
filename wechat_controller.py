@@ -494,98 +494,79 @@ class WeChatController:
             # 不激活弹窗，避免抢前台
             time.sleep(0.5)
 
-            # 记录弹窗内所有控件信息（调试用）
+            # 收集弹窗控件树（depth 限制防止无限递归）
+            all_ctrls = []
+            child_count = 0
             try:
-                all_ctrls = []
                 def collect_ctrls(ctrl, depth=0):
+                    nonlocal child_count
+                    if depth > 15:
+                        return
                     try:
                         name = ctrl.Name
                         ctrl_type = type(ctrl).__name__
                         all_ctrls.append(f"  {'  '*depth}{ctrl_type}: [{name}]")
-                        for child in ctrl.GetChildren():
-                            collect_ctrls(child, depth+1)
+                        children = ctrl.GetChildren()
+                        child_count += len(children)
+                        for child in children:
+                            collect_ctrls(child, depth + 1)
                     except Exception:
                         pass
                 collect_ctrls(popup)
-                for line in all_ctrls:
-                    logger.debug(line)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"控件树收集异常: {e}")
 
-            # 检测头像控件
-            has_avatar = False
-            has_nickname = False
+            logger.info(f"=== 弹窗控件树 (共{len(all_ctrls)}个控件, {child_count}个子级) ===")
+            for line in all_ctrls[:30]:  # 最多显示前30个
+                logger.info(line)
+            if len(all_ctrls) > 30:
+                logger.info(f"  ... 省略 {len(all_ctrls)-30} 个控件")
+            logger.info("=== 控件树结束 ===")
+
+            # CEF 应用内控件可能不可见，以"添加到通讯录"按钮为主判据
             has_add_button = False
             nickname_text = ""
 
-            # 1. 检测头像
-            try:
-                avatar = popup.ImageControl(searchDepth=5)
-                has_avatar = avatar.Exists(maxSearchSeconds=0.5)
-            except Exception:
-                pass
-
-            if not has_avatar:
+            # 优先检测"添加到通讯录"按钮（CEF 中最可能暴露的 UIA 元素）
+            for btn_name in ["添加到通讯录", "添加", "发消息"]:
                 try:
-                    avatar_btn = popup.ButtonControl(searchDepth=5)
-                    if avatar_btn.Exists(maxSearchSeconds=0.5):
-                        has_avatar = True
+                    btn = popup.ButtonControl(Name=btn_name, searchDepth=12)
+                    if btn.Exists(maxSearchSeconds=0.5):
+                        has_add_button = True
+                        logger.info(f"找到按钮: {btn_name}")
+                        break
                 except Exception:
-                    pass
+                    continue
 
-            # 2. 检测昵称
+            # 尝试从控件树中提取候选昵称文本
+            text_prefixes = ["TextControl: [", "EditControl: [", "ListItemControl: ["]
             try:
-                nick = popup.TextControl(searchDepth=5)
-                if nick.Exists(maxSearchSeconds=0.3):
-                    nickname_text = nick.Name
-                    has_nickname = bool(nickname_text and len(nickname_text) > 0)
-            except Exception:
-                pass
-
-            if not has_nickname:
-                try:
-                    for ctrl in popup.GetChildren():
-                        if hasattr(ctrl, 'Name') and ctrl.Name:
-                            name = ctrl.Name
-                            if name not in self.NICKNAME_EXCLUDE and len(name) <= 20:
-                                nickname_text = name
-                                has_nickname = True
-                                logger.debug(f"通过遍历找到昵称: {nickname_text}")
+                for ctrl in all_ctrls:
+                    ctrl_line = ctrl.strip()
+                    for prefix in text_prefixes:
+                        if ctrl_line.startswith(prefix):
+                            text = ctrl_line[len(prefix):-1]
+                            if text and text not in self.NICKNAME_EXCLUDE and 1 <= len(text) <= 20:
+                                nickname_text = text
+                                logger.info(f"从控件树找到候选昵称: {nickname_text}")
                                 break
-                            else:
-                                logger.debug(f"排除非昵称文本: [{name}]")
-                except Exception:
-                    pass
-
-            # 3. 检测"添加到通讯录"按钮
-            try:
-                add_btn = popup.ButtonControl(Name="添加到通讯录")
-                has_add_button = add_btn.Exists(maxSearchSeconds=0.3)
             except Exception:
                 pass
 
-            if not has_add_button:
-                try:
-                    add_btn = popup.ButtonControl(Name="添加")
-                    has_add_button = add_btn.Exists(maxSearchSeconds=0.3)
-                except Exception:
-                    pass
-
-            logger.debug(
-                f"弹窗检测: 头像={has_avatar} 昵称={has_nickname}({nickname_text}) "
-                f"添加按钮={has_add_button}"
+            logger.info(
+                f"弹窗检测结果: 添加按钮={has_add_button} 候选昵称={nickname_text} "
+                f"总控件数={len(all_ctrls)}"
             )
 
-            if has_avatar and has_nickname:
-                return ("normal", nickname_text)
+            # 判断逻辑："添加到通讯录"按钮存在 → 正常
+            if has_add_button:
+                return ("normal", nickname_text or "(未识别昵称)")
+            # 弹窗存在但无按钮 → 可能是异常号或 CEF 兼容性
+            elif len(all_ctrls) >= 3:
+                logger.warning("弹窗存在但未找到按钮，CEF兼容性问题，默认视为正常")
+                return ("normal", "(CEF兼容模式)")
             else:
-                reason_parts = []
-                if not has_avatar:
-                    reason_parts.append("无头像")
-                if not has_nickname:
-                    reason_parts.append("无昵称")
-                reason = " + ".join(reason_parts)
-                return ("abnormal", reason)
+                return ("abnormal", "弹窗控件极少，可能异常")
 
         except Exception as e:
             logger.error(f"检测弹窗状态时出错: {e}")
