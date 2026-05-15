@@ -202,18 +202,15 @@ class WeChatController:
     def focus_search_box(self):
         """
         按 Ctrl+F 激活搜索框
-        增加等待时间确保搜索框完全出现
+        auto.SendKeys 发到前台窗口，依赖 activate_window 的 SetActive 保证微信在前台
         """
         if not UIA_AVAILABLE:
             logger.error("uiautomation 不可用")
             return False
 
         try:
-            if self.wechat_window:
-                self.wechat_window.SendKeys("{Ctrl}f")
-            else:
-                auto.SendKeys("{Ctrl}f")
-            time.sleep(1.5)  # 增加等待时间
+            auto.SendKeys("{Ctrl}f")
+            time.sleep(1.5)
             logger.debug("已按下 Ctrl+F 激活搜索框")
             return True
         except Exception as e:
@@ -229,13 +226,12 @@ class WeChatController:
             return False
 
         try:
-            sk = self.wechat_window.SendKeys if self.wechat_window else auto.SendKeys
-
+            # auto.SendKeys 发到前台窗口，依赖 activate_window 保证微信在前台
             # 第1步: 全选 + 删除已有内容
             try:
-                sk("{Ctrl}a")
+                auto.SendKeys("{Ctrl}a")
                 time.sleep(0.3)
-                sk("{Delete}")
+                auto.SendKeys("{Delete}")
                 time.sleep(0.3)
             except Exception as e:
                 logger.error(f"清空搜索框失败: {e}")
@@ -245,13 +241,13 @@ class WeChatController:
             try:
                 _set_clipboard_text(wechat_id)
                 time.sleep(0.2)
-                sk("{Ctrl}v")
+                auto.SendKeys("{Ctrl}v")
                 logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
             except Exception as e:
                 logger.warning(f"剪贴板方式失败: {e}，回退到 SendKeys")
                 # 回退：转义花括号后直接 SendKeys
                 safe_id = wechat_id.replace("{", "{{}").replace("}", "{}}")
-                sk(safe_id)
+                auto.SendKeys(safe_id)
 
             time.sleep(0.5)
             logger.debug(f"已输入微信号: {wechat_id}")
@@ -263,7 +259,7 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         点击下拉框中的'网络查找手机/QQ号'项
-        只用 InvokePattern，不用 Click()，避免鼠标移动
+        只用 InvokePattern，搜索范围限定在微信窗口内
         """
         if not UIA_AVAILABLE:
             return False
@@ -276,7 +272,7 @@ class WeChatController:
             time.sleep(1.0)
 
             def invoke_item(item):
-                """只用 InvokePattern，不用 Click"""
+                """只用 InvokePattern，不移动鼠标"""
                 try:
                     pattern = item.GetInvokePattern()
                     pattern.Invoke()
@@ -285,9 +281,12 @@ class WeChatController:
                     logger.warning(f"InvokePattern 失败: {item.Name}")
                     return False
 
+            # 确定搜索起点：优先从微信窗口内搜索
+            search_root = self.wechat_window if self.wechat_window else auto
+
             # 方法1: 遍历 ListControl 的子项
             try:
-                list_ctrl = auto.ListControl(searchDepth=5)
+                list_ctrl = search_root.ListControl(searchDepth=8)
                 if list_ctrl.Exists(maxSearchSeconds=1):
                     items = list_ctrl.GetChildren()
                     logger.info(f"下拉列表中有 {len(items)} 个子项")
@@ -303,11 +302,11 @@ class WeChatController:
             except Exception as e:
                 logger.debug(f"遍历 ListControl 失败: {e}")
 
-            # 方法2: 直接按名称查找
+            # 方法2: 直接按名称在微信窗口内查找
             if not found:
                 for text in ["网络查找", "查找手机", "查找QQ"]:
                     try:
-                        item = auto.ListItemControl(Name=text, searchDepth=5)
+                        item = search_root.ListItemControl(Name=text, searchDepth=8)
                         if item.Exists(maxSearchSeconds=0.5):
                             if invoke_item(item):
                                 found = True
@@ -317,33 +316,12 @@ class WeChatController:
                     except Exception:
                         continue
 
-            # 方法3: 全局遍历
-            if not found:
-                try:
-                    for root_ctrl in auto.GetRootControl().GetChildren():
-                        try:
-                            for child in root_ctrl.GetChildren():
-                                if isinstance(child, auto.ListItemControl):
-                                    name = child.Name
-                                    if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
-                                        if invoke_item(child):
-                                            found = True
-                                            clicked_name = name
-                                            logger.info(f"点击下拉项(全局): {name}")
-                                            break
-                        except Exception:
-                            continue
-                        if found:
-                            break
-                except Exception as e:
-                    logger.debug(f"全局遍历失败: {e}")
-
             if found:
                 logger.info(f"成功点击下拉项: {clicked_name}")
                 time.sleep(2.0)
                 return True
             else:
-                logger.warning("未找到'网络查找'下拉项")
+                logger.warning("未找到'网络查找'下拉项（搜索范围已限定在微信窗口内）")
                 return False
 
         except Exception as e:
@@ -537,10 +515,7 @@ class WeChatController:
                 pass
 
             # 兜底：ESC
-            if self.wechat_window:
-                self.wechat_window.SendKeys("{Esc}")
-            else:
-                auto.SendKeys("{Esc}")
+            auto.SendKeys("{Esc}")
             time.sleep(0.5)
             logger.debug("已关闭弹窗(ESC)")
         except Exception as e:
@@ -551,10 +526,9 @@ class WeChatController:
         if not UIA_AVAILABLE:
             return
         try:
-            sk = self.wechat_window.SendKeys if self.wechat_window else auto.SendKeys
-            sk("{Ctrl}a")
+            auto.SendKeys("{Ctrl}a")
             time.sleep(0.2)
-            sk("{Delete}")
+            auto.SendKeys("{Delete}")
             time.sleep(0.3)
             logger.debug("搜索框已清空")
         except Exception as e:
