@@ -115,21 +115,49 @@ def _press_key(vk):
     time.sleep(0.05)
 
 
-# SendInput 结构体定义（用于输入 Unicode 文本）
+# SendInput 结构体定义（正确使用 Union 匹配 Windows SDK 布局）
 class _KEYBDINPUT(ctypes.Structure):
     _fields_ = [
         ("wVk", ctypes.c_ushort),
         ("wScan", ctypes.c_ushort),
         ("dwFlags", ctypes.c_uint),
         ("time", ctypes.c_uint),
-        ("dwExtraInfo", ctypes.c_void_p),
+        ("dwExtraInfo", ctypes.c_ulonglong),
+    ]
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_uint),
+        ("dwFlags", ctypes.c_uint),
+        ("time", ctypes.c_uint),
+        ("dwExtraInfo", ctypes.c_ulonglong),
+    ]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_uint),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("ki", _KEYBDINPUT),
+        ("mi", _MOUSEINPUT),
+        ("hi", _HARDWAREINPUT),
     ]
 
 
 class _INPUT(ctypes.Structure):
+    _anonymous_ = ("u",)
     _fields_ = [
         ("type", ctypes.c_uint),
-        ("ki", _KEYBDINPUT),
+        ("u", _INPUT_UNION),
     ]
 
 
@@ -149,7 +177,7 @@ def _type_text(text):
         inp_d.ki.wScan = code
         inp_d.ki.dwFlags = KEYEVENTF_UNICODE
         inp_d.ki.time = 0
-        inp_d.ki.dwExtraInfo = None
+        inp_d.ki.dwExtraInfo = 0
         inputs.append(inp_d)
         # 按键释放
         inp_u = _INPUT()
@@ -158,12 +186,14 @@ def _type_text(text):
         inp_u.ki.wScan = code
         inp_u.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
         inp_u.ki.time = 0
-        inp_u.ki.dwExtraInfo = None
+        inp_u.ki.dwExtraInfo = 0
         inputs.append(inp_u)
 
     count = len(inputs)
     arr = (_INPUT * count)(*inputs)
-    ctypes.windll.user32.SendInput(count, arr, ctypes.sizeof(_INPUT))
+    sent = ctypes.windll.user32.SendInput(count, arr, ctypes.sizeof(_INPUT))
+    if sent < count:
+        logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
 class WeChatController:
@@ -326,23 +356,37 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        用 keybd_event 清空 + SendInput 逐字符输入，不依赖剪贴板和 COM
+        优先尝试 uiautomation 直接设置 EditControl 的值，失败则用 keybd_event + SendInput
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            # 第1步: 全选 + 删除已有内容
+            # 方法A: 尝试找到搜索框 EditControl 直接设置文本值
+            try:
+                search_root = self.wechat_window if self.wechat_window else auto
+                edit = search_root.EditControl(searchDepth=10)
+                if edit.Exists(maxSearchSeconds=0.5):
+                    # 清空已有内容
+                    edit.GetValuePattern().SetValue("")
+                    time.sleep(0.1)
+                    # 直接设置微信号
+                    edit.GetValuePattern().SetValue(wechat_id)
+                    time.sleep(0.3)
+                    logger.debug(f"已通过 SetValue 输入微信号: {wechat_id}")
+                    return True
+            except Exception as e:
+                logger.debug(f"直接 SetValue 失败: {e}，回退到键盘模拟")
+
+            # 方法B: 键盘模拟 — keybd_event 清空 + SendInput 逐字符输入
             _send_hotkey(_VK["ctrl"], _VK["a"])
             time.sleep(0.2)
             _press_key(_VK["delete"])
             time.sleep(0.3)
-
-            # 第2步: 用 SendInput 逐字符输入微信号
             _type_text(wechat_id)
             time.sleep(0.3)
 
-            logger.debug(f"已输入微信号: {wechat_id}")
+            logger.debug(f"已通过键盘模拟输入微信号: {wechat_id}")
             return True
         except Exception as e:
             logger.error(f"输入微信号失败: {e}")
