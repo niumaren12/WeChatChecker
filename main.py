@@ -17,7 +17,7 @@ class WeChatCheckerApp:
     """主应用窗口"""
 
     APP_NAME = "微信账号状态检查工具"
-    APP_VERSION = "v1.1"
+    APP_VERSION = "v1.2"
 
     def __init__(self):
         self.config = ConfigManager()

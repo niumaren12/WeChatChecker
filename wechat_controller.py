@@ -94,8 +94,8 @@ class WeChatController:
 
     def activate_window(self):
         """
-        将微信窗口置前激活（最小化干扰）
-        使用 SetFocus 替代 SetTopmost，避免频繁抢前台
+        将微信窗口置前激活
+        SendKeys 必须发到前台窗口才能生效，所以必须 SetActive
         """
         if not UIA_AVAILABLE:
             logger.error("uiautomation 不可用，无法操作微信窗口")
@@ -104,7 +104,6 @@ class WeChatController:
         try:
             window = None
 
-            # 按多种类名查找
             for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
                 try:
                     w = auto.WindowControl(searchDepth=1, ClassName=class_name)
@@ -115,7 +114,6 @@ class WeChatController:
                 except Exception:
                     continue
 
-            # 按标题查找
             if window is None:
                 try:
                     w = auto.WindowControl(searchDepth=1, Name="微信")
@@ -129,19 +127,11 @@ class WeChatController:
                 logger.error("找不到微信主窗口")
                 return False
 
-            # 仅 SetFocus，不 SetTopmost，减少前台干扰
-            try:
-                window.SetFocus()
-            except Exception:
-                # SetFocus 失败时兜底用 SetActive
-                try:
-                    window.SetActive()
-                except Exception:
-                    pass
-
-            time.sleep(0.3)
+            # 必须 SetActive 让微信成为前台窗口，SendKeys 才能正确发送
+            window.SetActive()
+            time.sleep(0.5)
             self.wechat_window = window
-            logger.debug("微信窗口已获取焦点")
+            logger.debug("微信窗口已激活")
             return True
 
         except Exception as e:
@@ -153,15 +143,18 @@ class WeChatController:
     def focus_search_box(self):
         """
         按 Ctrl+F 激活搜索框
-        返回 True 表示成功
+        增加等待时间确保搜索框完全出现
         """
         if not UIA_AVAILABLE:
             logger.error("uiautomation 不可用")
             return False
 
         try:
-            auto.SendKeys("{Ctrl}f")
-            time.sleep(0.5)
+            if self.wechat_window:
+                self.wechat_window.SendKeys("{Ctrl}f")
+            else:
+                auto.SendKeys("{Ctrl}f")
+            time.sleep(1.5)  # 增加等待时间
             logger.debug("已按下 Ctrl+F 激活搜索框")
             return True
         except Exception as e:
@@ -171,22 +164,31 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        先清空已有内容再输入
+        用剪贴板粘贴替代逐字输入，更可靠
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
+            sk = self.wechat_window.SendKeys if self.wechat_window else auto.SendKeys
+
             # 全选 + 删除已有内容
-            auto.SendKeys("{Ctrl}a")
-            time.sleep(0.2)
-            auto.SendKeys("{Delete}")
+            sk("{Ctrl}a")
+            time.sleep(0.3)
+            sk("{Delete}")
             time.sleep(0.3)
 
-            # 输入微信号
-            auto.SendKeys(wechat_id)
-            time.sleep(1.0)  # 等待搜索结果加载
-            logger.debug(f"已输入微信号: {wechat_id}")
+            # 用剪贴板粘贴微信号（避免 SendKeys 逐字输入错位）
+            import subprocess
+            # 设置剪贴板内容
+            p = subprocess.run(["powershell", "-Command", f"Set-Clipboard -Value '{wechat_id}'"],
+                               capture_output=True, timeout=5)
+            time.sleep(0.2)
+            # Ctrl+V 粘贴
+            sk("{Ctrl}v")
+            time.sleep(0.5)
+
+            logger.debug(f"已粘贴微信号: {wechat_id}")
             return True
         except Exception as e:
             logger.error(f"输入微信号失败: {e}")
@@ -195,7 +197,7 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         点击下拉框中的'网络查找手机/QQ号'项
-        使用 InvokePattern 代替 Click()，避免鼠标移动
+        只用 InvokePattern，不用 Click()，避免鼠标移动
         """
         if not UIA_AVAILABLE:
             return False
@@ -208,17 +210,14 @@ class WeChatController:
             time.sleep(1.0)
 
             def invoke_item(item):
-                """用 InvokePattern 点击控件，不移动鼠标"""
+                """只用 InvokePattern，不用 Click"""
                 try:
                     pattern = item.GetInvokePattern()
                     pattern.Invoke()
                     return True
                 except Exception:
-                    try:
-                        item.Click()
-                        return True
-                    except Exception:
-                        return False
+                    logger.warning(f"InvokePattern 失败: {item.Name}")
+                    return False
 
             # 方法1: 遍历 ListControl 的子项
             try:
@@ -455,7 +454,7 @@ class WeChatController:
         if not UIA_AVAILABLE:
             return
         try:
-            # 优先找关闭按钮（标题栏的 × 按钮）
+            # 优先找关闭按钮
             try:
                 close_btn = auto.ButtonControl(Name="关闭", searchDepth=5)
                 if close_btn.Exists(maxSearchSeconds=0.3):
@@ -471,7 +470,10 @@ class WeChatController:
                 pass
 
             # 兜底：ESC
-            auto.SendKeys("{Esc}")
+            if self.wechat_window:
+                self.wechat_window.SendKeys("{Esc}")
+            else:
+                auto.SendKeys("{Esc}")
             time.sleep(0.5)
             logger.debug("已关闭弹窗(ESC)")
         except Exception as e:
@@ -482,9 +484,10 @@ class WeChatController:
         if not UIA_AVAILABLE:
             return
         try:
-            auto.SendKeys("{Ctrl}a")
+            sk = self.wechat_window.SendKeys if self.wechat_window else auto.SendKeys
+            sk("{Ctrl}a")
             time.sleep(0.2)
-            auto.SendKeys("{Delete}")
+            sk("{Delete}")
             time.sleep(0.3)
             logger.debug("搜索框已清空")
         except Exception as e:
