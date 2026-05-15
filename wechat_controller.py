@@ -215,6 +215,7 @@ class WeChatController:
         self.wechat_path = wechat_path
         self.wechat_window = None
         self.main_control = None
+        self._gui_log = None  # GUI 日志回调，由引擎注入
 
     # ==================== 窗口管理 ====================
 
@@ -447,6 +448,12 @@ class WeChatController:
             # 查找弹窗 — 三级搜索
             popup = None
 
+            def _glog(msg):
+                """同时写 logger 和 GUI 回调"""
+                logger.info(msg)
+                if self._gui_log:
+                    self._gui_log(msg)
+
             # 第1级：搜索较深层的独立窗口（searchDepth=3）
             popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
             for title in popup_titles:
@@ -454,7 +461,7 @@ class WeChatController:
                     w = auto.WindowControl(Name=title, searchDepth=3)
                     if w.Exists(maxSearchSeconds=0.8):
                         popup = w
-                        logger.info(f"找到弹窗(深层窗口): {title}")
+                        _glog(f"找到弹窗(深层窗口): {title}")
                         break
                 except Exception:
                     continue
@@ -466,30 +473,30 @@ class WeChatController:
                         pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
                         if pane.Exists(maxSearchSeconds=0.8):
                             popup = pane
-                            logger.info(f"找到弹窗(主窗口内面板): {title}")
+                            _glog(f"找到弹窗(主窗口内面板): {title}")
                             break
                     except Exception:
                         continue
 
             # 第3级：兜底用微信主窗口本身作为搜索范围
             if popup is None:
-                logger.warning("未找到独立弹窗，使用微信主窗口作为搜索范围")
+                _glog("未找到独立弹窗，使用微信主窗口作为搜索范围")
                 popup = self.wechat_window if self.wechat_window else auto.GetRootControl()
 
             if popup is None:
                 # 诊断：列出桌面所有顶层窗口
                 try:
                     all_top = auto.GetRootControl().GetChildren()
-                    logger.warning(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
+                    _glog(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
                     for w in all_top[:15]:
                         try:
-                            logger.warning(f"  [{w.ClassName}] Name='{w.Name}' "
-                                           f"Rect={w.BoundingRectangle}")
+                            _glog(f"  [{w.ClassName}] Name='{w.Name}' "
+                                  f"Rect={w.BoundingRectangle}")
                         except Exception:
                             pass
                 except Exception:
                     pass
-                logger.warning("未找到任何弹窗或微信窗口")
+                _glog("未找到任何弹窗或微信窗口")
                 return ("not_found", "")
 
             # 不激活弹窗，避免抢前台
@@ -546,22 +553,25 @@ class WeChatController:
                     logger.warning(f"全局遍历异常: {e}")
 
             # 输出找到的控件列表
-            logger.info(f"=== 弹窗范围内控件 (共{len(found_ctrls)}个) ===")
+            _glog(f"=== 弹窗范围内控件 (共{len(found_ctrls)}个) ===")
             for ctrl_type, name, rect in found_ctrls[:40]:
-                logger.info(f"  {ctrl_type}: [{name}] @ ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})")
+                _glog(f"  {ctrl_type}: [{name}] @ ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})")
             if len(found_ctrls) > 40:
-                logger.info(f"  ... 省略 {len(found_ctrls)-40} 个")
-            logger.info("=== 控件列表结束 ===")
+                _glog(f"  ... 省略 {len(found_ctrls)-40} 个")
+            _glog("=== 控件列表结束 ===")
 
             # 判断逻辑
-            logger.info(f"弹窗检测: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)}")
+            diag = f"弹窗检测: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)} 搜索范围={'弹窗' if popup_rect else '无'}"
+            logger.info(diag)
+            # 通过实例变量传诊断信息给引擎
+            self._last_popup_diag = diag
             if has_add_button:
                 return ("normal", nickname_text or "(未识别昵称)")
             elif len(found_ctrls) >= 2:
                 logger.warning("弹窗存在但未找到按钮，默认视为正常")
                 return ("normal", "(CEF兼容)")
             else:
-                return ("abnormal", "弹窗控件极少，可能异常")
+                return ("abnormal", f"控件极少(共{len(found_ctrls)}个)，{diag}")
 
         except Exception as e:
             logger.error(f"检测弹窗状态时出错: {e}")

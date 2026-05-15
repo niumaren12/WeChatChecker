@@ -28,6 +28,7 @@ class CheckerEngine:
     def __init__(self, config_mgr: ConfigManager):
         self.config = config_mgr
         self.wechat = WeChatController(config_mgr.get("wechat_path", ""))
+        self.wechat._gui_log = self._emit_log  # 注入 GUI 日志回调
         self._running = False
         self._stop_event = threading.Event()
 
