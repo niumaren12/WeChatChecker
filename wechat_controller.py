@@ -115,6 +115,57 @@ def _press_key(vk):
     time.sleep(0.05)
 
 
+# SendInput 结构体定义（用于输入 Unicode 文本）
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_uint),
+        ("time", ctypes.c_uint),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint),
+        ("ki", _KEYBDINPUT),
+    ]
+
+
+def _type_text(text):
+    """用 SendInput 逐字符输入 Unicode 文本，不依赖剪贴板"""
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+    INPUT_KEYBOARD = 1
+
+    inputs = []
+    for ch in text:
+        code = ord(ch)
+        # 按键按下
+        inp_d = _INPUT()
+        inp_d.type = INPUT_KEYBOARD
+        inp_d.ki.wVk = 0
+        inp_d.ki.wScan = code
+        inp_d.ki.dwFlags = KEYEVENTF_UNICODE
+        inp_d.ki.time = 0
+        inp_d.ki.dwExtraInfo = None
+        inputs.append(inp_d)
+        # 按键释放
+        inp_u = _INPUT()
+        inp_u.type = INPUT_KEYBOARD
+        inp_u.ki.wVk = 0
+        inp_u.ki.wScan = code
+        inp_u.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+        inp_u.ki.time = 0
+        inp_u.ki.dwExtraInfo = None
+        inputs.append(inp_u)
+
+    count = len(inputs)
+    arr = (_INPUT * count)(*inputs)
+    ctypes.windll.user32.SendInput(count, arr, ctypes.sizeof(_INPUT))
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -275,29 +326,22 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        用 Win32 剪贴板 API + keybd_event Ctrl+V 粘贴，不依赖 uiautomation COM
+        用 keybd_event 清空 + SendInput 逐字符输入，不依赖剪贴板和 COM
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
             # 第1步: 全选 + 删除已有内容
-            try:
-                _send_hotkey(_VK["ctrl"], _VK["a"])
-                time.sleep(0.3)
-                _press_key(_VK["delete"])
-                time.sleep(0.3)
-            except Exception as e:
-                logger.error(f"清空搜索框失败: {e}")
-                return False
-
-            # 第2步: 填入微信号（剪贴板 + Ctrl+V）
-            _set_clipboard_text(wechat_id)
+            _send_hotkey(_VK["ctrl"], _VK["a"])
             time.sleep(0.2)
-            _send_hotkey(_VK["ctrl"], _VK["v"])
-            logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
+            _press_key(_VK["delete"])
+            time.sleep(0.3)
 
-            time.sleep(0.5)
+            # 第2步: 用 SendInput 逐字符输入微信号
+            _type_text(wechat_id)
+            time.sleep(0.3)
+
             logger.debug(f"已输入微信号: {wechat_id}")
             return True
         except Exception as e:
