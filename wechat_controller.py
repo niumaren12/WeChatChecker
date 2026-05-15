@@ -94,8 +94,8 @@ class WeChatController:
 
     def activate_window(self):
         """
-        将微信窗口置前激活
-        返回 True 表示成功
+        将微信窗口置前激活（最小化干扰）
+        使用 SetFocus 替代 SetTopmost，避免频繁抢前台
         """
         if not UIA_AVAILABLE:
             logger.error("uiautomation 不可用，无法操作微信窗口")
@@ -104,24 +104,24 @@ class WeChatController:
         try:
             window = None
 
-            # 方式1: 按多种类名查找
+            # 按多种类名查找
             for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
                 try:
                     w = auto.WindowControl(searchDepth=1, ClassName=class_name)
                     if w.Exists(maxSearchSeconds=1):
                         window = w
-                        logger.info(f"通过类名找到微信窗口: {class_name}")
+                        logger.debug(f"通过类名找到微信窗口: {class_name}")
                         break
                 except Exception:
                     continue
 
-            # 方式2: 按标题查找
+            # 按标题查找
             if window is None:
                 try:
                     w = auto.WindowControl(searchDepth=1, Name="微信")
                     if w.Exists(maxSearchSeconds=1):
                         window = w
-                        logger.info("通过标题找到微信窗口")
+                        logger.debug("通过标题找到微信窗口")
                 except Exception:
                     pass
 
@@ -129,13 +129,19 @@ class WeChatController:
                 logger.error("找不到微信主窗口")
                 return False
 
-            window.SetActive()
-            time.sleep(0.5)
-            window.SetTopmost(True)
+            # 仅 SetFocus，不 SetTopmost，减少前台干扰
+            try:
+                window.SetFocus()
+            except Exception:
+                # SetFocus 失败时兜底用 SetActive
+                try:
+                    window.SetActive()
+                except Exception:
+                    pass
+
             time.sleep(0.3)
-            window.SetTopmost(False)
             self.wechat_window = window
-            logger.info("微信窗口已激活")
+            logger.debug("微信窗口已获取焦点")
             return True
 
         except Exception as e:
@@ -189,64 +195,90 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         点击下拉框中的'网络查找手机/QQ号'项
-        返回 True 表示成功点击
+        使用 InvokePattern 代替 Click()，避免鼠标移动
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            # 查找下拉列表控件
-            # 微信下拉框通常是 ListItemControl 或 ListControl
-            # 查找包含"网络查找"文本的项
             found = False
+            clicked_name = ""
 
-            # 尝试不同方式定位下拉项
-            search_texts = ["网络查找", "查找手机", "查找QQ"]
+            # 等待下拉列表出现
+            time.sleep(1.0)
 
-            for text in search_texts:
+            def invoke_item(item):
+                """用 InvokePattern 点击控件，不移动鼠标"""
                 try:
-                    item = auto.ListItemControl(Name=text)
-                    if item.Exists(maxSearchSeconds=0.5):
+                    pattern = item.GetInvokePattern()
+                    pattern.Invoke()
+                    return True
+                except Exception:
+                    try:
                         item.Click()
-                        found = True
-                        logger.info(f"点击下拉项: {text}")
-                        break
-                except Exception:
-                    continue
+                        return True
+                    except Exception:
+                        return False
 
-            # 如果精确文本没找到，尝试模糊匹配
-            if not found:
-                try:
-                    # 遍历所有 ListItem
-                    list_control = auto.ListControl()
-                    if list_control.Exists(maxSearchSeconds=1):
-                        items = list_control.GetChildren()
-                        for item in items:
-                            name = item.Name
-                            if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
-                                item.Click()
+            # 方法1: 遍历 ListControl 的子项
+            try:
+                list_ctrl = auto.ListControl(searchDepth=5)
+                if list_ctrl.Exists(maxSearchSeconds=1):
+                    items = list_ctrl.GetChildren()
+                    logger.info(f"下拉列表中有 {len(items)} 个子项")
+                    for item in items:
+                        name = item.Name
+                        logger.info(f"  下拉项: [{name}]")
+                        if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
+                            if invoke_item(item):
                                 found = True
-                                logger.info(f"点击下拉项(模糊匹配): {name}")
+                                clicked_name = name
+                                logger.info(f"点击下拉项: {name}")
                                 break
-                except Exception:
-                    pass
+            except Exception as e:
+                logger.debug(f"遍历 ListControl 失败: {e}")
 
+            # 方法2: 直接按名称查找
             if not found:
-                # 最后尝试：直接点第一个下拉项
+                for text in ["网络查找", "查找手机", "查找QQ"]:
+                    try:
+                        item = auto.ListItemControl(Name=text, searchDepth=5)
+                        if item.Exists(maxSearchSeconds=0.5):
+                            if invoke_item(item):
+                                found = True
+                                clicked_name = text
+                                logger.info(f"点击下拉项(精确匹配): {text}")
+                                break
+                    except Exception:
+                        continue
+
+            # 方法3: 全局遍历
+            if not found:
                 try:
-                    first_item = auto.ListItemControl()
-                    if first_item.Exists(maxSearchSeconds=1):
-                        first_item.Click()
-                        found = True
-                        logger.info("点击第一个下拉项(兜底)")
-                except Exception:
-                    pass
+                    for root_ctrl in auto.GetRootControl().GetChildren():
+                        try:
+                            for child in root_ctrl.GetChildren():
+                                if isinstance(child, auto.ListItemControl):
+                                    name = child.Name
+                                    if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
+                                        if invoke_item(child):
+                                            found = True
+                                            clicked_name = name
+                                            logger.info(f"点击下拉项(全局): {name}")
+                                            break
+                        except Exception:
+                            continue
+                        if found:
+                            break
+                except Exception as e:
+                    logger.debug(f"全局遍历失败: {e}")
 
             if found:
-                time.sleep(1.5)  # 等待弹窗出现
+                logger.info(f"成功点击下拉项: {clicked_name}")
+                time.sleep(2.0)
                 return True
             else:
-                logger.warning("未找到下拉项")
+                logger.warning("未找到'网络查找'下拉项")
                 return False
 
         except Exception as e:
@@ -272,18 +304,73 @@ class WeChatController:
             # 等待弹窗出现（最多等 3 秒）
             time.sleep(0.5)
 
-            # 查找"添加朋友"窗口
-            popup = auto.WindowControl(Name="添加朋友")
-            if not popup.Exists(maxSearchSeconds=2):
-                # 尝试其他可能的窗口标题
-                popup = auto.WindowControl(Name="详细信息")
-                if not popup.Exists(maxSearchSeconds=1):
-                    # 尝试找最近出现的新窗口
-                    logger.warning("未找到添加朋友窗口")
-                    return ("not_found", "")
+            # 查找弹窗 - 尝试多种可能的窗口标题
+            popup = None
+            popup_titles = ["添加朋友", "详细信息", "联系人", "搜索",
+                           "朋友验证", "新的朋友", "添加",
+                           "WeChat", "微信"]  # 兜底
 
-            popup.SetActive()
-            time.sleep(0.3)
+            for title in popup_titles:
+                try:
+                    w = auto.WindowControl(Name=title, searchDepth=1)
+                    if w.Exists(maxSearchSeconds=0.5):
+                        # 排除主窗口本身
+                        if title == "微信" or title == "WeChat":
+                            # 检查是不是新弹窗（不是主窗口）
+                            try:
+                                if w.ClassName == "WeChatMainWndForPC":
+                                    continue
+                            except Exception:
+                                pass
+                        popup = w
+                        logger.info(f"找到弹窗: {title}")
+                        break
+                except Exception:
+                    continue
+
+            if popup is None:
+                # 最后尝试：找所有顶层窗口，排除已知的主窗口
+                try:
+                    all_windows = auto.GetRootControl().GetChildren()
+                    for w in all_windows:
+                        if isinstance(w, auto.WindowControl):
+                            try:
+                                cls = w.ClassName
+                                if cls and cls not in ["WeChatMainWndForPC", "ChatWnd"]:
+                                    name = w.Name
+                                    if name and len(name) > 0 and name != "微信":
+                                        popup = w
+                                        logger.info(f"通过遍历找到弹窗: {name} (class={cls})")
+                                        break
+                            except Exception:
+                                continue
+                except Exception as e:
+                    logger.debug(f"遍历窗口失败: {e}")
+
+            if popup is None:
+                logger.warning("未找到任何弹窗")
+                return ("not_found", "")
+
+            # 不激活弹窗，避免抢前台
+            time.sleep(0.5)
+
+            # 记录弹窗内所有控件信息（调试用）
+            try:
+                all_ctrls = []
+                def collect_ctrls(ctrl, depth=0):
+                    try:
+                        name = ctrl.Name
+                        ctrl_type = type(ctrl).__name__
+                        all_ctrls.append(f"  {'  '*depth}{ctrl_type}: [{name}]")
+                        for child in ctrl.GetChildren():
+                            collect_ctrls(child, depth+1)
+                    except Exception:
+                        pass
+                collect_ctrls(popup)
+                for line in all_ctrls:
+                    logger.debug(line)
+            except Exception:
+                pass
 
             # 检测头像控件
             has_avatar = False
@@ -291,7 +378,7 @@ class WeChatController:
             has_add_button = False
             nickname_text = ""
 
-            # 1. 检测头像（ImageControl 或 ButtonControl 类型的头像）
+            # 1. 检测头像
             try:
                 avatar = popup.ImageControl(searchDepth=5)
                 has_avatar = avatar.Exists(maxSearchSeconds=0.5)
@@ -300,17 +387,14 @@ class WeChatController:
 
             if not has_avatar:
                 try:
-                    # 有些版本头像可能是 Button
                     avatar_btn = popup.ButtonControl(searchDepth=5)
-                    # 尝试找圆形头像按钮（通常第一个 Button 是头像）
                     if avatar_btn.Exists(maxSearchSeconds=0.5):
                         has_avatar = True
                 except Exception:
                     pass
 
-            # 2. 检测昵称（TextControl）
+            # 2. 检测昵称
             try:
-                # 找昵称文本：通常在特定区域
                 nick = popup.TextControl(searchDepth=5)
                 if nick.Exists(maxSearchSeconds=0.3):
                     nickname_text = nick.Name
@@ -318,12 +402,10 @@ class WeChatController:
             except Exception:
                 pass
 
-            # 如果直接找没找到，遍历子控件找文本
             if not has_nickname:
                 try:
                     for ctrl in popup.GetChildren():
                         if hasattr(ctrl, 'Name') and ctrl.Name:
-                            # 排除常见的非昵称文本
                             exclude = ["添加朋友", "微信号", "标签", "来源", "地区",
                                        "个性签名", "添加到通讯录", "发消息", "音视频通话"]
                             if ctrl.Name not in exclude and len(ctrl.Name) <= 20:
@@ -353,7 +435,6 @@ class WeChatController:
                 f"添加按钮={has_add_button}"
             )
 
-            # 判定
             if has_avatar and has_nickname:
                 return ("normal", nickname_text)
             else:
@@ -370,13 +451,29 @@ class WeChatController:
             return ("not_found", "")
 
     def close_popup(self):
-        """按 ESC 关闭弹窗"""
+        """关闭弹窗 - 优先找关闭按钮，兜底 ESC"""
         if not UIA_AVAILABLE:
             return
         try:
+            # 优先找关闭按钮（标题栏的 × 按钮）
+            try:
+                close_btn = auto.ButtonControl(Name="关闭", searchDepth=5)
+                if close_btn.Exists(maxSearchSeconds=0.3):
+                    try:
+                        pattern = close_btn.GetInvokePattern()
+                        pattern.Invoke()
+                        time.sleep(0.5)
+                        logger.debug("通过关闭按钮关闭弹窗")
+                        return
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 兜底：ESC
             auto.SendKeys("{Esc}")
             time.sleep(0.5)
-            logger.debug("已关闭弹窗")
+            logger.debug("已关闭弹窗(ESC)")
         except Exception as e:
             logger.error(f"关闭弹窗失败: {e}")
 
