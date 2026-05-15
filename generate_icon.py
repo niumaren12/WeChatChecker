@@ -105,7 +105,7 @@ def create_simple_ico(filepath, size=32):
         f.write(bih)
         f.write(image_data)
 
-    print(f"图标已生成: {filepath} ({width}x{height})")
+    print(f"Icon generated: {filepath} ({width}x{height})")
 
 
 if __name__ == "__main__":
