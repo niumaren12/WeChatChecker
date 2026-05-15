@@ -21,24 +21,54 @@ except ImportError:
 
 
 def _set_clipboard_text(text):
-    """通过 Win32 API 设置剪贴板文本，避免 shell 命令注入"""
+    """通过 Win32 API 设置剪贴板文本，带重试，失败时抛明确异常"""
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE = 0x0002
 
-    ctypes.windll.user32.OpenClipboard(0)
-    ctypes.windll.user32.EmptyClipboard()
+    last_err = None
+    for attempt in range(3):
+        try:
+            h_wnd = ctypes.windll.user32.GetForegroundWindow()
+            if not ctypes.windll.user32.OpenClipboard(h_wnd):
+                last_err = f"OpenClipboard 失败 (尝试 {attempt+1}/3)"
+                time.sleep(0.1)
+                continue
 
-    wchar_size = ctypes.sizeof(ctypes.c_wchar)
-    buf_size = (len(text) + 1) * wchar_size
-    h_mem = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, buf_size)
-    p_mem = ctypes.windll.kernel32.GlobalLock(h_mem)
+            try:
+                if not ctypes.windll.user32.EmptyClipboard():
+                    last_err = f"EmptyClipboard 失败 (尝试 {attempt+1}/3)"
+                    continue
 
-    buf = ctypes.create_unicode_buffer(text)
-    ctypes.memmove(p_mem, buf, buf_size)
+                wchar_size = ctypes.sizeof(ctypes.c_wchar)
+                buf_size = (len(text) + 1) * wchar_size
+                h_mem = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, buf_size)
+                if not h_mem:
+                    last_err = f"GlobalAlloc 失败 (尝试 {attempt+1}/3)"
+                    continue
 
-    ctypes.windll.kernel32.GlobalUnlock(h_mem)
-    ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-    ctypes.windll.user32.CloseClipboard()
+                p_mem = ctypes.windll.kernel32.GlobalLock(h_mem)
+                if not p_mem:
+                    ctypes.windll.kernel32.GlobalFree(h_mem)
+                    last_err = f"GlobalLock 失败 (尝试 {attempt+1}/3)"
+                    continue
+
+                buf = ctypes.create_unicode_buffer(text)
+                ctypes.memmove(p_mem, buf, buf_size)
+                ctypes.windll.kernel32.GlobalUnlock(h_mem)
+
+                if not ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                    ctypes.windll.kernel32.GlobalFree(h_mem)
+                    last_err = f"SetClipboardData 失败 (尝试 {attempt+1}/3)"
+                    continue
+
+                return  # 成功
+            finally:
+                ctypes.windll.user32.CloseClipboard()
+        except Exception as e:
+            last_err = f"剪贴板异常 (尝试 {attempt+1}/3): {e}"
+            time.sleep(0.1)
+
+    raise OSError(last_err or "设置剪贴板失败")
 
 
 class WeChatController:
@@ -193,7 +223,7 @@ class WeChatController:
     def input_wechat_id(self, wechat_id):
         """
         在搜索框中输入微信号
-        用 Win32 API 设置剪贴板后 Ctrl+V 粘贴，无 shell 注入风险
+        优先用 Win32 API 设剪贴板后 Ctrl+V，失败则回退到清理后的 SendKeys
         """
         if not UIA_AVAILABLE:
             return False
@@ -201,21 +231,30 @@ class WeChatController:
         try:
             sk = self.wechat_window.SendKeys if self.wechat_window else auto.SendKeys
 
-            # 全选 + 删除已有内容
-            sk("{Ctrl}a")
-            time.sleep(0.3)
-            sk("{Delete}")
-            time.sleep(0.3)
+            # 第1步: 全选 + 删除已有内容
+            try:
+                sk("{Ctrl}a")
+                time.sleep(0.3)
+                sk("{Delete}")
+                time.sleep(0.3)
+            except Exception as e:
+                logger.error(f"清空搜索框失败: {e}")
+                return False
 
-            # 通过 Win32 API 设置剪贴板，避免 PowerShell 命令注入
-            _set_clipboard_text(wechat_id)
-            time.sleep(0.2)
+            # 第2步: 填入微信号（剪贴板优先，SendKeys 兜底）
+            try:
+                _set_clipboard_text(wechat_id)
+                time.sleep(0.2)
+                sk("{Ctrl}v")
+                logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
+            except Exception as e:
+                logger.warning(f"剪贴板方式失败: {e}，回退到 SendKeys")
+                # 回退：转义花括号后直接 SendKeys
+                safe_id = wechat_id.replace("{", "{{}").replace("}", "{}}")
+                sk(safe_id)
 
-            # Ctrl+V 粘贴
-            sk("{Ctrl}v")
             time.sleep(0.5)
-
-            logger.debug(f"已粘贴微信号: {wechat_id}")
+            logger.debug(f"已输入微信号: {wechat_id}")
             return True
         except Exception as e:
             logger.error(f"输入微信号失败: {e}")
