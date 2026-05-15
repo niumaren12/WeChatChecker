@@ -131,8 +131,7 @@ class CheckerEngine:
                 if not self.wechat.is_wechat_running():
                     self._emit_log("微信未运行，请手动打开微信并登录", "error")
                     self._emit_status("微信未运行")
-                    if self.on_abnormal:
-                        self.on_abnormal("系统", "微信未运行")
+                    # 系统级错误，直接停止，不触发异常弹窗
                     break
 
                 # 将列表分批

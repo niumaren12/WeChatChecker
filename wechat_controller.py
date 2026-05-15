@@ -35,34 +35,54 @@ class WeChatController:
     # ==================== 窗口管理 ====================
 
     def is_wechat_running(self):
-        """检查微信是否在运行"""
-        if not UIA_AVAILABLE:
-            # 降级：通过进程名检查
+        """检查微信是否在运行 - 优先用进程名检查"""
+        # 方法1: 通过 psutil 检查进程（最可靠）
+        try:
+            import psutil
+            for proc in psutil.process_iter(["name"]):
+                if proc.info["name"] == self.WECHAT_PROCESS:
+                    logger.debug("通过 psutil 检测到微信进程运行中")
+                    return True
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"psutil 检查进程异常: {e}")
+
+        # 方法2: 通过 tasklist 检查进程
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {self.WECHAT_PROCESS}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if self.WECHAT_PROCESS in result.stdout:
+                logger.debug("通过 tasklist 检测到微信进程运行中")
+                return True
+        except Exception as e:
+            logger.debug(f"tasklist 检查异常: {e}")
+
+        # 方法3: 通过 uiautomation 查找窗口（兜底）
+        if UIA_AVAILABLE:
             try:
-                import psutil
-                for proc in psutil.process_iter(["name"]):
-                    if proc.info["name"] == self.WECHAT_PROCESS:
-                        return True
-                return False
-            except ImportError:
-                # 用 tasklist 检查
+                for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
+                    try:
+                        window = auto.WindowControl(searchDepth=1, ClassName=class_name)
+                        if window.Exists(maxSearchSeconds=0.3):
+                            logger.debug(f"通过 uiautomation 类名 {class_name} 检测到微信窗口")
+                            return True
+                    except Exception:
+                        continue
                 try:
-                    result = subprocess.run(
-                        ["tasklist", "/FI", f"IMAGENAME eq {self.WECHAT_PROCESS}"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    return self.WECHAT_PROCESS in result.stdout
+                    window = auto.WindowControl(searchDepth=1, Name="微信")
+                    if window.Exists(maxSearchSeconds=0.3):
+                        logger.debug("通过 uiautomation 标题检测到微信窗口")
+                        return True
                 except Exception:
-                    logger.warning("无法检查微信进程状态")
-                    return False
-        else:
-            try:
-                window = auto.WindowControl(
-                    searchDepth=1, ClassName="WeChatMainWndForPC"
-                )
-                return window.Exists(maxSearchSeconds=0)
+                    pass
             except Exception:
-                return False
+                pass
+
+        logger.warning("未检测到微信进程/窗口")
+        return False
 
     def prompt_open_wechat(self):
         """
@@ -82,11 +102,30 @@ class WeChatController:
             return False
 
         try:
-            # 查找微信主窗口
-            window = auto.WindowControl(
-                searchDepth=1, ClassName="WeChatMainWndForPC"
-            )
-            if not window.Exists(maxSearchSeconds=2):
+            window = None
+
+            # 方式1: 按多种类名查找
+            for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
+                try:
+                    w = auto.WindowControl(searchDepth=1, ClassName=class_name)
+                    if w.Exists(maxSearchSeconds=1):
+                        window = w
+                        logger.info(f"通过类名找到微信窗口: {class_name}")
+                        break
+                except Exception:
+                    continue
+
+            # 方式2: 按标题查找
+            if window is None:
+                try:
+                    w = auto.WindowControl(searchDepth=1, Name="微信")
+                    if w.Exists(maxSearchSeconds=1):
+                        window = w
+                        logger.info("通过标题找到微信窗口")
+                except Exception:
+                    pass
+
+            if window is None:
                 logger.error("找不到微信主窗口")
                 return False
 
