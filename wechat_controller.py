@@ -514,42 +514,19 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        截图下拉区域 → 键盘 ↑+Enter
+        键盘 ↑+Enter：微信默认选中"搜索网络结果"，↑回到"网络查找"
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
-            # 等待搜索结果下拉列表出现
             time.sleep(1.5)
-
-            # 截图下拉菜单区域（用 GetWindowDC 截微信窗口内部，避免桌面坐标转换）
-            try:
-                if self.wechat_window:
-                    hwnd = self.wechat_window.NativeWindowHandle
-                    if hwnd:
-                        r = ctypes.wintypes.RECT()
-                        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
-                        win_w = r.right - r.left
-                        scr_dir = os.path.join(os.getcwd(), "screenshots")
-                        os.makedirs(scr_dir, exist_ok=True)
-                        filepath = os.path.join(scr_dir, "dropdown.bmp")
-                        # 截取窗口内部：从 y=80 到 y=330（搜索框+下拉区域）
-                        _screenshot_window(hwnd, 20, 80, win_w - 20, 330, filepath)
-                        self._gui_log(f"下拉截图已保存: {filepath}")
-            except Exception as e:
-                if self._gui_log:
-                    self._gui_log(f"下拉截图异常: {e}")
-
-            # 键盘操作：↑ 往上选"网络查找"，Enter 确认
-            _press_key(0x26)  # VK_UP
+            _press_key(0x26)  # VK_UP → "网络查找手机/QQ号"
             time.sleep(0.3)
-            _press_key(0x0D)  # VK_RETURN
+            _press_key(0x0D)  # VK_RETURN → 打开
             time.sleep(2.0)
-
             logger.info("已通过键盘 ↑+Enter 选择下拉项")
             return True
-
         except Exception as e:
             logger.error(f"点击下拉项失败: {e}")
             return False
@@ -650,19 +627,6 @@ class WeChatController:
                     _glog(f"弹窗位置(UIA): {popup_rect}")
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
-
-            # 截图弹窗区域（用 GetWindowDC + 窗口相对坐标）
-            if popup_rect:
-                try:
-                    pw = popup_rect[2] - popup_rect[0]
-                    ph = popup_rect[3] - popup_rect[1]
-                    scr_dir = os.path.join(os.getcwd(), "screenshots")
-                    os.makedirs(scr_dir, exist_ok=True)
-                    filepath = os.path.join(scr_dir, "popup.bmp")
-                    _screenshot_window(popup_hwnd, 0, 0, pw, ph, filepath)
-                    _glog(f"弹窗截图已保存: {filepath} ({pw}x{ph})")
-                except Exception as e:
-                    _glog(f"弹窗截图失败: {e}")
 
             # 从桌面根控件全局遍历，筛选弹窗范围内的控件
             found_ctrls = []  # (ctrl_type, name, rect)
