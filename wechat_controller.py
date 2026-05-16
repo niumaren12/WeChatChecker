@@ -251,7 +251,7 @@ def _no_console_popen():
             subprocess.Popen = original
 
 
-def _preprocess_for_ocr(image):
+def _preprocess_for_ocr(image, threshold=140):
     """图像预处理：放大2倍 + 灰度 + 二值化，提升Tesseract识别率"""
     from PIL import Image, ImageOps, ImageFilter
 
@@ -262,8 +262,8 @@ def _preprocess_for_ocr(image):
     image = ImageOps.grayscale(image)
     # 锐化
     image = image.filter(ImageFilter.SHARPEN)
-    # 自适应二值化：白色背景 + 深色文字 → 黑白分明
-    image = image.point(lambda p: 255 if p > 140 else 0)
+    # 二值化：白色背景 + 深色文字 → 黑白分明
+    image = image.point(lambda p: 255 if p > threshold else 0)
     return image
 
 
@@ -319,6 +319,29 @@ def _ocr_get_text_entries(image):
             w = int(data["width"][i] * scale)
             h = int(data["height"][i] * scale)
             entries.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
+
+    if not entries:
+        # 回退：降低二值化阈值重试（某些机器上笔画细的字被截断）
+        with _no_console_popen():
+            processed2 = _preprocess_for_ocr(image, threshold=100)
+            try:
+                data = pytesseract.image_to_data(
+                    processed2, lang="chi_sim", output_type=pytesseract.Output.DICT,
+                    config="--psm 6"
+                )
+            except Exception:
+                return [], [], ""
+
+        n = len(data["text"])
+        for i in range(n):
+            text = data["text"][i].strip()
+            conf = data["conf"][i]
+            if text and conf > 10:
+                x = int(data["left"][i] * scale)
+                y = int(data["top"][i] * scale)
+                w = int(data["width"][i] * scale)
+                h = int(data["height"][i] * scale)
+                entries.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
 
     if not entries:
         return [], [], ""
