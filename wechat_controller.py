@@ -226,7 +226,7 @@ def _get_tesseract_path():
 
 def _preprocess_for_ocr(image):
     """图像预处理：放大2倍 + 灰度 + 二值化，提升Tesseract识别率"""
-    from PIL import ImageOps, ImageFilter
+    from PIL import Image, ImageOps, ImageFilter
 
     w, h = image.size
     # 放大2倍（Tesseract 需要文字至少10px高）
