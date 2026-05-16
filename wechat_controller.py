@@ -224,6 +224,22 @@ def _get_tesseract_path():
 
 # ---------- OCR 辅助函数 ----------
 
+def _preprocess_for_ocr(image):
+    """图像预处理：放大2倍 + 灰度 + 二值化，提升Tesseract识别率"""
+    from PIL import ImageOps, ImageFilter
+
+    w, h = image.size
+    # 放大2倍（Tesseract 需要文字至少10px高）
+    image = image.resize((w * 2, h * 2), Image.LANCZOS)
+    # 转灰度
+    image = ImageOps.grayscale(image)
+    # 锐化
+    image = image.filter(ImageFilter.SHARPEN)
+    # 自适应二值化：白色背景 + 深色文字 → 黑白分明
+    image = image.point(lambda p: 255 if p > 140 else 0)
+    return image
+
+
 def _screenshot_region(left, top, right, bottom):
     """截取屏幕指定区域，返回 PIL.Image（mss 截图，DPI 感知）"""
     import mss
@@ -246,9 +262,13 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
 
+    # 预处理图像提高识别率
+    processed = _preprocess_for_ocr(image)
+
     try:
         data = pytesseract.image_to_data(
-            image, lang="chi_sim", output_type=pytesseract.Output.DICT
+            processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+            config="--psm 6"  # 假设为均匀文本块
         )
     except Exception as e:
         logger.warning(f"Tesseract OCR 失败: {e}")
@@ -256,14 +276,15 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
 
     matches = []
     n = len(data["text"])
+    scale = 0.5  # 坐标缩放（图片放大了2倍）
     for i in range(n):
         text = data["text"][i].strip()
         conf = data["conf"][i]
-        if target_text in text and conf > 20:
-            x = data["left"][i]
-            y = data["top"][i]
-            w = data["width"][i]
-            h = data["height"][i]
+        if target_text in text and conf > 15:
+            x = int(data["left"][i] * scale)
+            y = int(data["top"][i] * scale)
+            w = int(data["width"][i] * scale)
+            h = int(data["height"][i] * scale)
             cx = region_left + x + w // 2
             cy = region_top + y + h // 2
             matches.append((cx, cy, text))
@@ -276,9 +297,12 @@ def _ocr_contains_text(image, target_text, glog=None):
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
 
+    processed = _preprocess_for_ocr(image)
+
     try:
         data = pytesseract.image_to_data(
-            image, lang="chi_sim", output_type=pytesseract.Output.DICT
+            processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+            config="--psm 6"
         )
     except Exception as e:
         logger.warning(f"Tesseract OCR 失败: {e}")
@@ -590,8 +614,10 @@ class WeChatController:
         try:
             import pytesseract
             pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
+            processed = _preprocess_for_ocr(img)
             data = pytesseract.image_to_data(
-                img, lang="chi_sim", output_type=pytesseract.Output.DICT
+                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+                config="--psm 6"
             )
             texts = [t.strip() for t in data["text"] if t.strip()]
             all_text = " | ".join(texts[:15])
