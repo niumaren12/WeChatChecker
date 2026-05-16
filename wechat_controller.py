@@ -202,49 +202,60 @@ _ocr_lang_installed = False  # 是否已尝试安装过中文OCR语言包
 
 
 def _ensure_chinese_ocr():
-    """检查并自动安装 Windows 中文 OCR 语言包（静默，不弹UAC）"""
+    """检查并自动安装 Windows OCR 语言包（en-US + zh-CN，静默不弹UAC）"""
     global _ocr_lang_installed
     if _ocr_lang_installed:
         return True
 
     import subprocess
 
-    # 检查中文OCR是否已安装
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-WindowsCapability -Online | "
-             "Where-Object {$_.Name -like '*OCR*zh-CN*'}).State"],
-            capture_output=True, text=True, timeout=30
+    # winocr 默认用 en-US，同时需要 zh-CN 识别中文
+    # 先检查，缺哪个装哪个
+    needed = [
+        ("Language.OCR~~~en-US~0.0.1.0", "英文OCR"),
+        ("Language.OCR~~~zh-CN~0.0.1.0", "中文OCR"),
+    ]
+
+    all_ok = True
+    for pkg_name, desc in needed:
+        # 检查是否已安装
+        try:
+            check = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-WindowsCapability -Online -Name '{pkg_name}').State"],
+                capture_output=True, text=True, timeout=30
+            )
+            if check.returncode == 0 and "Installed" in check.stdout:
+                logger.info(f"{desc}语言包已安装")
+                continue
+        except Exception:
+            pass
+
+        logger.info(f"{desc}语言包未安装，尝试安装...")
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Add-WindowsCapability -Online -Name {pkg_name}"],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                logger.info(f"{desc}语言包安装成功")
+            else:
+                logger.warning(f"{desc}语言包安装失败: {result.stderr.strip()}")
+                all_ok = False
+        except Exception as e:
+            logger.warning(f"{desc}语言包安装异常: {e}")
+            all_ok = False
+
+    if not all_ok:
+        logger.error(
+            "OCR语言包安装失败。请以管理员身份打开PowerShell，执行以下命令后重启程序:\n"
+            "  Add-WindowsCapability -Online -Name Language.OCR~~~en-US~0.0.1.0\n"
+            "  Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0"
         )
-        if result.returncode == 0 and "Installed" in result.stdout:
-            _ocr_lang_installed = True
-            return True
-    except Exception:
-        pass
 
-    logger.info("中文OCR语言包未安装，尝试自动安装...")
-
-    try:
-        # 直接安装，不加 RunAs（不弹UAC蓝框）
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode == 0:
-            logger.info("中文OCR语言包安装成功")
-            _ocr_lang_installed = True
-            return True
-        else:
-            logger.warning(f"安装失败(exit={result.returncode}): {result.stderr}")
-    except Exception as e:
-        logger.warning(f"安装中文OCR语言包异常: {e}")
-
-    logger.error("中文OCR语言包安装失败，请以管理员运行powershell执行: "
-                  "Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0")
-    _ocr_lang_installed = True  # 标记已尝试，不再重试
-    return False
+    _ocr_lang_installed = True  # 已尝试，不再重试
+    return all_ok
 
 
 # ---------- OCR 辅助函数 ----------
