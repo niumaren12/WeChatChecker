@@ -491,14 +491,16 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        先尝试像素识别+鼠标点击，失败回退键盘 ↑+Enter
+        像素识别+鼠标点击，失败回退键盘
         """
         if not UIA_AVAILABLE:
             return False
 
         time.sleep(1.5)
+        glog = self._gui_log
 
-        # 尝试像素识别（可能因 PyInstaller 环境问题失败）
+        # 尝试像素识别
+        pixel_ok = False
         try:
             if self.wechat_window:
                 hwnd = self.wechat_window.NativeWindowHandle
@@ -510,39 +512,40 @@ class WeChatController:
                     if w > 0 and h > 0:
                         green_range = ((0, 80), (150, 255), (0, 120))
                         green_y, green_max = 0, 0
-                        for scan_y in range(70, min(140, h)):
+                        for scan_y in range(10, min(h - 3, 200)):
                             cnt = _count_pixels(pixels, w, h, 10, scan_y, 80, scan_y + 3, green_range)
                             if cnt > green_max:
                                 green_max = cnt
                                 green_y = scan_y
 
-                        if green_max > 5:
+                        if glog:
+                            glog(f"下拉像素扫描: 最大绿色={green_max} @ y={green_y}(窗口y={60+green_y})")
+
+                        if green_max > 3:
                             screen_x = r.left + 40
                             screen_y = r.top + 60 + green_y
-                            if self._gui_log:
-                                self._gui_log(f"绿色图标: y={green_y}, 像素={green_max}, 点击({screen_x},{screen_y})")
+                            if glog:
+                                glog(f"找到绿色图标 → 鼠标点击({screen_x},{screen_y})")
                             ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
                             time.sleep(0.1)
                             ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
                             time.sleep(0.05)
                             ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
                             time.sleep(2.0)
-                            logger.info(f"鼠标点击下拉项 ({screen_x},{screen_y})")
+                            pixel_ok = True
                             return True
         except Exception as e:
-            logger.warning(f"像素识别失败: {e}，回退键盘")
+            if glog:
+                glog(f"像素识别异常: {e}")
 
         # 回退：键盘 ↑+Enter
-        try:
-            logger.info("键盘 ↑+Enter 选择下拉项")
-            _press_key(0x26)  # VK_UP
-            time.sleep(0.3)
-            _press_key(0x0D)  # VK_RETURN
-            time.sleep(2.0)
-            return True
-        except Exception as e:
-            logger.error(f"键盘选择下拉项失败: {e}")
-            return False
+        if glog:
+            glog(f"下拉选择: {'像素点击' if pixel_ok else '键盘↑+Enter'}")
+        _press_key(0x26)
+        time.sleep(0.3)
+        _press_key(0x0D)
+        time.sleep(2.0)
+        return True
 
     # ==================== 弹窗检测 ====================
 
