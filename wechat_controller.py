@@ -16,8 +16,8 @@ UIA_AVAILABLE = False
 try:
     import uiautomation as auto
     UIA_AVAILABLE = True
-except ImportError:
-    logger.warning("uiautomation 未安装，将使用模拟方案（仅用于开发环境测试）")
+except Exception:
+    logger.warning("uiautomation 导入失败，将使用模拟方案", exc_info=True)
 
 
 def _set_clipboard_text(text):
