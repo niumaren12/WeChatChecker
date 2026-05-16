@@ -45,17 +45,7 @@ jobs:
       - name: 打包为 exe
         shell: cmd
         run: |
-          pyinstaller --onefile --windowed --icon=app.ico --name WeChatChecker ^
-            --debug imports ^
-            --additional-hooks-dir hooks ^
-            --paths . ^
-            --hidden-import wechat_controller ^
-            --hidden-import PIL --hidden-import PIL.Image ^
-            --hidden-import PIL.ImageOps --hidden-import PIL.ImageFilter ^
-            --add-data "config.json;." ^
-            --add-data "wechat_ids.txt;." ^
-            --add-data "tesseract_bundle;tesseract" ^
-            main.py
+          pyinstaller --clean WeChatChecker.spec
 
       - name: 复制配置文件
         shell: cmd

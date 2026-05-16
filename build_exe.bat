@@ -60,7 +60,7 @@ echo.
 echo === [4/4] 打包为 exe（需等待1-3分钟）===
 echo 正在打包...
 
-pyinstaller --onefile --windowed --icon=app.ico --name WeChatChecker --debug imports --additional-hooks-dir hooks --paths . --hidden-import wechat_controller --hidden-import PIL --hidden-import PIL.Image --hidden-import PIL.ImageOps --hidden-import PIL.ImageFilter --add-data "config.json;." --add-data "wechat_ids.txt;." --add-data "tesseract_bundle;tesseract" main.py
+pyinstaller --clean WeChatChecker.spec
 if %errorlevel% neq 0 (
     echo [错误] 打包失败
     echo 常见原因：
