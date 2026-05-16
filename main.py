@@ -134,9 +134,39 @@ class WeChatCheckerApp:
         ttk.Button(path_row, text="浏览", width=6,
                    command=self._browse_wechat_path).pack(side=tk.RIGHT)
 
-        # ---- 微信号列表区域 ----
-        ids_frame = ttk.LabelFrame(main_frame, text="微信号列表", padding=6)
-        ids_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        # ---- 左右分栏：微信号列表（左） + Telegram（右） ----
+        split_frame = ttk.Frame(main_frame)
+        split_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        # 左侧：微信号列表
+        ids_frame = ttk.LabelFrame(split_frame, text="微信号列表", padding=6)
+        ids_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 右侧：Telegram 通知配置
+        telegram_frame = ttk.LabelFrame(split_frame, text="📨 Telegram 通知", padding=8)
+        telegram_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+
+        self.telegram_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            telegram_frame, text="启用通知",
+            variable=self.telegram_enabled_var,
+        ).pack(anchor=tk.W)
+
+        ttk.Label(telegram_frame, text="群组/频道 ID:", font=("微软雅黑", 8)).pack(anchor=tk.W, pady=(8, 2))
+        self.telegram_chatid_var = tk.StringVar()
+        ttk.Entry(
+            telegram_frame, textvariable=self.telegram_chatid_var, width=22
+        ).pack(fill=tk.X)
+
+        self.telegram_test_btn = ttk.Button(
+            telegram_frame, text="🔄 发送测试消息", width=14,
+            command=self._on_test_telegram,
+        )
+        self.telegram_test_btn.pack(pady=(8, 4))
+        self.telegram_status_label = ttk.Label(
+            telegram_frame, text="", foreground="#666666", font=("微软雅黑", 8)
+        )
+        self.telegram_status_label.pack()
 
         # Listbox + 滚动条
         listbox_frame = ttk.Frame(ids_frame)
@@ -231,22 +261,6 @@ class WeChatCheckerApp:
         ttk.Checkbutton(
             sound_row, text="🔊 异常时声音播报", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
-
-        # Telegram 通知开关
-        telegram_row = ttk.Frame(config_frame)
-        telegram_row.pack(fill=tk.X, pady=(2, 0))
-        self.telegram_enabled_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            telegram_row, text="📨 Telegram 异常通知", variable=self.telegram_enabled_var
-        ).pack(side=tk.LEFT)
-        self.telegram_test_btn = ttk.Button(
-            telegram_row, text="🔄 测试", width=6,
-            command=self._on_test_telegram,
-        )
-        self.telegram_test_btn.pack(side=tk.LEFT, padx=(8, 4))
-        self.telegram_status_label = ttk.Label(
-            telegram_row, text="", foreground="#666666", font=("微软雅黑", 8)
-        )
         self.telegram_status_label.pack(side=tk.LEFT)
 
         # ---- 控制按钮区域 ----
@@ -401,6 +415,7 @@ class WeChatCheckerApp:
         self.max_rounds_var.set(str(self.config.get("max_rounds", 100)))
         self.sound_enabled_var.set(self.config.get("sound_enabled", True))
         self.telegram_enabled_var.set(self.config.get("telegram_enabled", False))
+        self.telegram_chatid_var.set(self.config.get("telegram_chat_id", ""))
         # 从文件加载微信号列表到界面
         self._load_ids_to_listbox()
 
@@ -432,6 +447,7 @@ class WeChatCheckerApp:
 
         self.config.set("sound_enabled", self.sound_enabled_var.get())
         self.config.set("telegram_enabled", self.telegram_enabled_var.get())
+        self.config.set("telegram_chat_id", self.telegram_chatid_var.get().strip())
 
     def _browse_wechat_path(self):
         """浏览选择微信可执行文件"""
@@ -803,7 +819,8 @@ class WeChatCheckerApp:
 
         def _do_test():
             from telegram_notifier import TelegramNotifier
-            notifier = TelegramNotifier(enabled=True)
+            chat_id = self.telegram_chatid_var.get().strip()
+            notifier = TelegramNotifier(enabled=True, chat_id=chat_id)
             ok, msg = notifier.send_test_notification()
 
             def _update_ui():

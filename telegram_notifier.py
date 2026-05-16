@@ -13,8 +13,6 @@ from logger_setup import logger
 # ==================== 配置常量（按需修改） ====================
 # Bot Token: 从 @BotFather 获取，格式 "123456:ABC-DEF1234ghikl"
 TELEGRAM_BOT_TOKEN = "8627831778:AAFZ04aMuyDCox3Npg4ZRpBRJBotqo6Vw48"
-# Chat ID: 频道用 @channel_name，群组/个人用数字 ID
-TELEGRAM_CHAT_ID = "-1003974347005"
 
 # Telegram Bot API 端点
 _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -34,8 +32,9 @@ DEFAULT_TEMPLATE = (
 class TelegramNotifier:
     """Telegram Bot 通知发送器，线程安全"""
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, chat_id: str = ""):
         self._enabled = enabled
+        self._chat_id = chat_id
         self._lock = threading.Lock()
         self._last_send_time: float = 0.0
         self._min_interval: float = 1.0  # 两次发送最小间隔（秒）
@@ -115,13 +114,13 @@ class TelegramNotifier:
         if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
             return False, "Bot Token 未配置（请修改 telegram_notifier.py 中的 TELEGRAM_BOT_TOKEN）"
 
-        if TELEGRAM_CHAT_ID == "@your_channel_name":
-            return False, "Chat ID 未配置（请修改 telegram_notifier.py 中的 TELEGRAM_CHAT_ID）"
+        if not self._chat_id or not self._chat_id.strip():
+            return False, "Chat ID 未配置（请在界面中填写群组/频道 ID）"
 
         url = _API_URL.format(token=TELEGRAM_BOT_TOKEN)
 
         payload = json.dumps({
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": self._chat_id.strip(),
             "text": message,
             "disable_web_page_preview": True,
         }, ensure_ascii=False).encode("utf-8")

@@ -30,7 +30,8 @@ class CheckerEngine:
 
         # Telegram 通知器
         self._telegram_notifier = TelegramNotifier(
-            enabled=config_mgr.get("telegram_enabled", False)
+            enabled=config_mgr.get("telegram_enabled", False),
+            chat_id=config_mgr.get("telegram_chat_id", ""),
         )
 
         # 回调函数（供 GUI 使用）

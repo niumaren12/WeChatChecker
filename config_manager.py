@@ -21,6 +21,7 @@ DEFAULT_CONFIG = {
 
     # Telegram 通知配置
     "telegram_enabled": False,
+    "telegram_chat_id": "-1003974347005",
     "telegram_message_template": (
         "🚨 异常账号告警\n"
         "\n"
