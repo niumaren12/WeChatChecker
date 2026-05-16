@@ -196,93 +196,67 @@ def _type_text(text):
         logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
-def _capture_pixels(hwnd, left, top, right, bottom):
-    """截取窗口区域，返回 (width, height, pixels_bgra_topdown)。
-    64位兼容：显式设置 argtypes 避免句柄溢出。"""
+# ---------- OCR 辅助函数 ----------
+
+def _screenshot_region(left, top, right, bottom):
+    """截取屏幕指定区域，返回 PIL.Image（mss 截图，DPI 感知）"""
+    import mss
+    from PIL import Image
+
     width = right - left
     height = bottom - top
     if width <= 0 or height <= 0:
-        return (0, 0, b"")
+        return None
 
-    # 显式声明 argtypes 防止 64 位句柄溢出
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    user32.GetWindowDC.argtypes = [ctypes.c_void_p]
-    user32.GetWindowDC.restype = ctypes.c_void_p
-    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
-    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
-    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
-    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
-
-    hdc_win = user32.GetWindowDC(hwnd)
-    hdc_mem = gdi32.CreateCompatibleDC(hdc_win)
-    h_bmp = gdi32.CreateCompatibleBitmap(hdc_win, width, height)
-    gdi32.SelectObject(hdc_mem, h_bmp)
-    # BitBlt 有9个参数，需要完整声明
-    gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
-                              ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
-                              ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-    gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, left, top, 0x00CC0020)
-
-    class BI(ctypes.Structure):
-        _fields_ = [
-            ("biSize", ctypes.c_uint), ("biWidth", ctypes.c_int), ("biHeight", ctypes.c_int),
-            ("biPlanes", ctypes.c_ushort), ("biBitCount", ctypes.c_ushort),
-            ("biCompression", ctypes.c_uint), ("biSizeImage", ctypes.c_uint),
-            ("biXPelsPerMeter", ctypes.c_int), ("biYPelsPerMeter", ctypes.c_int),
-            ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
-        ]
-    bi = BI()
-    bi.biSize = ctypes.sizeof(BI)
-    bi.biWidth = width
-    bi.biHeight = height
-    bi.biPlanes = 1
-    bi.biBitCount = 32
-    bi.biCompression = 0
-
-    buf_size = width * height * 4
-    buf = (ctypes.c_ubyte * buf_size)()
-    gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
-                                 ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
-    gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
-
-    # 翻转行顺序：BMP 底部行在前 → 顶行在前
-    row_size = width * 4
-    pixels_topdown = bytearray(buf_size)
-    for y in range(height):
-        src_start = (height - 1 - y) * row_size
-        dst_start = y * row_size
-        pixels_topdown[dst_start:dst_start + row_size] = buf[src_start:src_start + row_size]
-
-    gdi32.DeleteObject(h_bmp)
-    gdi32.DeleteDC(hdc_mem)
-    user32.ReleaseDC(hwnd, hdc_win)
-    return (width, height, bytes(pixels_topdown))
+    with mss.mss() as sct:
+        monitor = {"left": left, "top": top, "width": width, "height": height}
+        sct_img = sct.grab(monitor)
+        return Image.frombytes("RGB", (width, height), sct_img.bgra, "raw", "BGRX")
 
 
-def _count_pixels(pixels, width, height, x1, y1, x2, y2, rgb_range):
-    """统计矩形区域内匹配颜色范围的像素数。
-    rgb_range: ((r_min,r_max), (g_min,g_max), (b_min,b_max))"""
-    count = 0
-    (r_min, r_max), (g_min, g_max), (b_min, b_max) = rgb_range
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(width, x2)
-    y2 = min(height, y2)
-    for py in range(y1, y2):
-        row_start = py * width * 4
-        for px in range(x1, x2):
-            offset = row_start + px * 4
-            b = pixels[offset]
-            g = pixels[offset + 1]
-            r = pixels[offset + 2]
-            if r_min <= r <= r_max and g_min <= g <= g_max and b_min <= b <= b_max:
-                count += 1
-    return count
+def _ocr_find_text(image, target_text, region_left=0, region_top=0):
+    """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
+    from winocr import recognize
+
+    try:
+        result = recognize(image)
+    except Exception as e:
+        logger.warning(f"winocr 识别失败: {e}")
+        return []
+
+    matches = []
+    for line in result.lines:
+        if target_text in line.text:
+            cx = region_left + line.bounding_rect.x + line.bounding_rect.width // 2
+            cy = region_top + line.bounding_rect.y + line.bounding_rect.height // 2
+            matches.append((cx, cy, line.text))
+    return matches
+
+
+def _ocr_contains_text(image, target_text):
+    """OCR 识别图片，检查是否包含目标文字"""
+    from winocr import recognize
+
+    try:
+        result = recognize(image)
+    except Exception as e:
+        logger.warning(f"winocr 识别失败: {e}")
+        return False
+
+    for line in result.lines:
+        if target_text in line.text:
+            return True
+    return False
+
+
+def _mouse_click(x, y):
+    """移动鼠标到屏幕绝对坐标并左键点击"""
+    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+    time.sleep(0.05)
+    ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+    time.sleep(0.03)
+    ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+    time.sleep(0.05)
 
 
 class WeChatController:
@@ -490,18 +464,69 @@ class WeChatController:
 
     def click_dropdown_item(self):
         """
-        选择搜索下拉框中的'网络查找手机/QQ号'项
-        键盘 ↑+Enter（微信默认选中"搜索网络结果"，↑回到"网络查找"）
+        OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
+        截图搜索框下方区域 → winocr 识别 → 鼠标点击文字中心
         """
-        if not UIA_AVAILABLE:
+        time.sleep(1.5)  # 等待下拉菜单渲染
+
+        # 获取微信窗口屏幕矩形（Win32 GetWindowRect，不受 DPI 影响）
+        rect = None
+        if self.wechat_window:
+            try:
+                hwnd = self.wechat_window.NativeWindowHandle
+                if hwnd:
+                    r = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+                    rect = (r.left, r.top, r.right, r.bottom)
+            except Exception:
+                pass
+
+        if rect is None:
+            logger.error("无法获取微信窗口位置，无法截图下拉菜单")
             return False
 
-        time.sleep(1.5)
-        _press_key(0x26)  # VK_UP → "网络查找手机/QQ号"
-        time.sleep(0.3)
-        _press_key(0x0D)  # VK_RETURN
-        time.sleep(2.0)
-        return True
+        win_left, win_top, win_right, win_bottom = rect
+        # 下拉菜单出现在搜索框下方，搜索框约在窗口顶部偏左
+        # 截取窗口左上部：left~left+400, top+40~top+380
+        region = (win_left, win_top + 40, win_left + 400, win_top + 380)
+
+        img = _screenshot_region(*region)
+        if img is None:
+            logger.error("截图下拉菜单失败")
+            return False
+
+        # OCR 识别，查找"网络查找"（兼容"网络查找手机/QQ号"等变体）
+        matches = _ocr_find_text(img, "网络查找", region[0], region[1])
+        if matches:
+            cx, cy, text = matches[0]
+            logger.info(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+            _mouse_click(cx, cy)
+            time.sleep(2.0)  # 等待弹窗加载
+            return True
+
+        # 第一次没找到，扩大搜索区域再试
+        region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
+        img2 = _screenshot_region(*region2)
+        if img2 is not None:
+            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1])
+            if matches2:
+                cx, cy, text = matches2[0]
+                logger.info(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+                _mouse_click(cx, cy)
+                time.sleep(2.0)
+                return True
+
+        # OCR 未找到，记录识别到的所有文字用于调试
+        try:
+            from winocr import recognize
+            result = recognize(img)
+            all_text = " | ".join([line.text for line in result.lines[:10]])
+            logger.warning(f"未找到'网络查找'，OCR识别到的文字: {all_text}")
+        except Exception:
+            pass
+
+        logger.error("OCR 未找到下拉菜单中的'网络查找'项")
+        return False
 
     # ==================== 弹窗检测 ====================
 
@@ -600,40 +625,24 @@ class WeChatController:
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
 
-            # 像素检测"添加到通讯录"按钮：灰底 + 黑字 = 有文字的按钮
+            # OCR 识别弹窗区域，检查是否包含"添加到通讯录"
             has_add_button = False
-            if popup_rect and popup_hwnd:
+            if popup_rect:
                 try:
-                    pw = popup_rect[2] - popup_rect[0]
-                    ph = popup_rect[3] - popup_rect[1]
-                    w, h, pixels = _capture_pixels(popup_hwnd, 0, 0, pw, ph)
-                    if w > 0 and h > 0:
-                        btn_x1 = int(w * 0.10)
-                        btn_y1 = int(h * 0.80)
-                        btn_x2 = int(w * 0.90)
-                        btn_y2 = int(h * 0.95)
-                        # 灰色背景 (按钮底色)
-                        gray_range = ((170, 240), (170, 240), (170, 240))
-                        gray_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, gray_range)
-                        # 黑色/深色文字 (按钮上的字)
-                        dark_range = ((0, 60), (0, 60), (0, 60))
-                        dark_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, dark_range)
-                        total_in_rect = (btn_x2 - btn_x1) * (btn_y2 - btn_y1)
-                        gray_pct = gray_count / total_in_rect * 100 if total_in_rect > 0 else 0
-                        dark_pct = dark_count / total_in_rect * 100 if total_in_rect > 0 else 0
-                        # 灰底(>60%) + 黑字(>2%) = 有文字的按钮 = "添加到通讯录"
-                        has_add_button = gray_pct > 60 and dark_pct > 2
-                        _glog(f"像素检测: 灰底={gray_pct:.0f}% 黑字={dark_pct:.1f}% → "
-                              f"按钮={'有文字' if has_add_button else '无文字/不存在'}")
+                    img = _screenshot_region(*popup_rect)
+                    if img is not None:
+                        has_add_button = _ocr_contains_text(img, "添加到通讯录")
+                        _glog(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
+                              f"→ {'找到' if has_add_button else '未找到'}'添加到通讯录'")
                 except Exception as e:
-                    _glog(f"像素检测异常: {e}，回退到弹窗打开=正常")
+                    _glog(f"OCR弹窗检测异常: {e}")
 
             # 判断逻辑
             if has_add_button:
-                _glog("弹窗: 按钮有文字(添加到通讯录) → 正常")
+                _glog("弹窗: 有'添加到通讯录' → 正常")
                 return ("normal", "(已识别按钮)")
             elif popup_rect:
-                _glog("弹窗: 已打开但按钮无文字 → 可能异常")
+                _glog("弹窗: 已打开但无'添加到通讯录' → 可能异常")
                 return ("abnormal", "按钮无文字")
             else:
                 return ("abnormal", "弹窗未打开")

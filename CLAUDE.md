@@ -30,7 +30,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 ```
 
-**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → ↑ 选下拉项 → Enter 打开面板 → 三级弹窗搜索定位 → GDI 像素截取检测按钮（灰底+黑字）→ 回调 GUI。
+**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 三级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
 
 ## 关键：微信 PC 4.x 是 CEF/Chromium 应用（进程名 Weixin.exe）
 
@@ -42,30 +42,36 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   - `_type_text(text)` — SendInput + KEYEVENTF_UNICODE 逐字符输入
   - 输入回退：base64 编码 + PowerShell `[Windows.Clipboard]::SetText` + Ctrl+V
 - **窗口查找仍可用**（找微信主窗口、弹窗），但内部控件不可用
-- **弹窗按钮检测用 GDI 像素截取 + 颜色统计**：先用 uiautomation 定位弹窗位置，再用 `_capture_pixels` (BitBlt + GetDIBits) 截取弹窗底部区域，统计灰色像素 (170-240) 和深色像素 (0-60)，灰底>60% + 黑字>2% = 按钮有文字 = "添加到通讯录"
+- **下拉菜单和弹窗检测用 OCR (Windows 内置引擎)**：截图 → winocr 识别文字 → 获取坐标/判断文字存在
+  - 下拉：mss 截图搜索框下方 → winocr 找"网络查找" → `_mouse_click` 点击文字中心
+  - 弹窗：保留 UIA 三级搜索定位弹窗 → mss 截图弹窗区域 → winocr 检查是否包含"添加到通讯录"
 
 ## 微信窗口操作流程
 
 1. `activate_window`: Win32 `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow`
 2. `focus_search_box`: `_send_hotkey(ctrl, f)` → 等待 1.5s
 3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板
-4. `click_dropdown_item`: 等待 1.5s → **按 ↑ 往上一步**（微信默认选中"搜索网络结果"，目标"网络查找手机/QQ号"在它上方）→ Enter
-5. `check_popup_status`: 三级弹窗搜索定位 → GDI 截取弹窗底部区域 → 灰底+黑字像素统计 → 判断按钮是否存在
+4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → winocr 识别"网络查找" → `_mouse_click` 点击文字中心
+5. `check_popup_status`: 三级弹窗搜索定位 → mss 截图弹窗区域 → winocr 检查是否包含"添加到通讯录"
 
-## 像素检测按钮（GDI 截图）
+## OCR 文字识别（Windows 内置引擎）
 
-`_capture_pixels` 用 Win32 GDI API 截取窗口像素（BitBlt + GetDIBits），64位兼容需显式声明 `argtypes`（见 commit 6632db3）。`_count_pixels` 统计矩形区域内匹配颜色范围的像素数。
+使用 `winocr`（Windows.Media.Ocr 封装）+ `mss` 截图实现屏幕文字识别：
 
-`check_popup_status` 使用像素检测判断"添加到通讯录"按钮是否存在：
-- 截取弹窗底部 10%-90% 宽度、80%-95% 高度区域
-- 灰色范围 (170-240, 170-240, 170-240) = 按钮底色
-- 深色范围 (0-60, 0-60, 0-60) = 按钮文字
-- 灰底占比 > 60% **且** 黑字占比 > 2% → 有文字的按钮 → 正常账号
-- 像素检测异常不返回 False，回退到"弹窗已打开=正常"（commit 3cfa768）
+- `_screenshot_region(left, top, right, bottom)` — mss 截取屏幕区域，返回 PIL Image
+- `_ocr_find_text(image, target, region_left, region_top)` — winocr 识别文字，返回匹配项屏幕绝对坐标列表
+- `_ocr_contains_text(image, target)` — winocr 检查图片是否包含目标文字
+- `_mouse_click(x, y)` — Win32 `SetCursorPos` + `mouse_event` 点击屏幕坐标
+
+两个核心场景：
+1. **下拉菜单**：截图搜索框下方区域 → OCR 找"网络查找" → 鼠标点击
+2. **弹窗按钮**：保留 UIA 三级搜索定位弹窗 → 截图弹窗 → OCR 检查"添加到通讯录"
+
+依赖：`winocr>=1.3.0`、`mss>=9.0.0`、`Pillow`（mss 依赖）
 
 ## 跨层日志回调
 
-`WeChatController._gui_log` 由 `CheckerEngine.__init__` 注入为 `_emit_log`，使 wechat_controller 内部日志（如像素检测结果）能同时写 logger 和 GUI。避免了 wechat_controller 直接依赖 tkinter。
+`WeChatController._gui_log` 由 `CheckerEngine.__init__` 注入为 `_emit_log`，使 wechat_controller 内部日志（如 OCR 识别结果）能同时写 logger 和 GUI。避免了 wechat_controller 直接依赖 tkinter。
 
 ## 弹窗搜索（三级）
 
