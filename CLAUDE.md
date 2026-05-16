@@ -14,11 +14,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-pip install -r requirements.txt   # 安装依赖
-python main.py                    # 源码运行
-python generate_icon.py           # 生成图标
-build_exe.bat                     # 打包为 exe
+pip install -r requirements.txt          # 安装依赖
+python main.py                           # 源码运行
+python generate_icon.py                  # 从 base64 数据生成 app.ico
+python diagnose_wechat_window.py         # 诊断 — 列出所有顶层窗口类名/标题/位置
+build_exe.bat                            # 一键打包（推荐）
+pyinstaller --clean WeChatChecker.spec   # 直接用 PyInstaller 打包（build_exe.bat 的核心步骤）
 ```
+
+## PyInstaller 打包注意事项
+
+**正式打包入口是 `WeChatChecker.spec`**，不是 `main.py`。spec 文件显式声明了所有 `hiddenimports`（`wechat_controller`、`checker_engine`、`PIL`、`mss`、`pytesseract` 等），并用 `datas` 将 `tesseract_bundle/` 目录（exe + dll + tessdata/chi_sim.traineddata）打入 exe。
+
+**PyInstaller hook** (`hooks/hook-wechat_controller.py`) 强制 PyInstaller 收集 `wechat_controller` 模块。该模块在 `main.py` 中被显式 import（虽然只用于确保打包），不依赖隐式分析。
+
+Tesseract OCR 引擎的打包流程：
+1. CI 中通过 `choco install tesseract-ocr` 安装
+2. 复制 `tesseract.exe` + 所有 `.dll` 到 `tesseract_bundle/`
+3. 下载 `chi_sim.traineddata` 到 `tesseract_bundle/tessdata/`
+4. spec 文件将整个 `tesseract_bundle/` 作为 DATA 打入 exe
+5. 运行时 `_get_tesseract_path()` 自动解压到临时目录使用
 
 ## 架构
 
@@ -29,9 +44,20 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   ├── config_manager.py # 配置读写（config.json）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 
+构建辅助:
+  hooks/hook-wechat_controller.py  # PyInstaller hook — 强制收集 wechat_controller 模块
+  WeChatChecker.spec               # PyInstaller spec — 显式管理所有 hiddenimports 和 datas
+
 辅助工具:
   diagnose_wechat_window.py  # 桌面窗口诊断 — 列出所有顶层窗口类名/标题/位置
 ```
+
+**依赖说明**：
+- `uiautomation` — 窗口查找和控件定位（仅 Windows，CEF 内部控件不可见）
+- `psutil` — 检测微信进程是否在运行
+- `pyinstaller` — 打包为 exe（仅打包时需）
+- `mss` + `Pillow` + `pytesseract` — OCR 文字识别链路
+- Tesseract 引擎 — 系统级依赖，CI 中通过 choco 安装后打入 exe，运行时自动解压
 
 **数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 三级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
 
@@ -99,4 +125,14 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 ## CI/CD
 
-推送 main → GitHub Actions windows-latest 构建 exe → artifact 上传。
+推送 main 或手动触发 → GitHub Actions `windows-latest` 构建 exe → artifact 上传。
+
+CI 流程 (`build.yml`)：
+1. 安装 Python 3.12 + pip 依赖
+2. `choco install tesseract-ocr` 安装 Tesseract 引擎
+3. 复制 `tesseract.exe` + dll 到 `tesseract_bundle/`
+4. 下载 `chi_sim.traineddata` 中文语言包
+5. `python generate_icon.py` 生成图标
+6. `pyinstaller --clean WeChatChecker.spec` 打包
+7. 复制 `config.json`、`wechat_ids.txt` 到 `dist/`
+8. `actions/upload-artifact@v4` 上传整个 `dist/` 目录
