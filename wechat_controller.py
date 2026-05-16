@@ -454,7 +454,7 @@ def _ocr_contains_text(image, target_text, glog=None):
     return False
 
 
-def _mouse_click(hwnd, x, y):
+def _mouse_click(x, y):
     """在屏幕绝对坐标执行真实鼠标点击。
 
     使用 SetCursorPos + mouse_event 产生硬件级鼠标事件。
@@ -710,58 +710,50 @@ class WeChatController:
             return False
 
         win_left, win_top, win_right, win_bottom = rect
-        region = (win_left, win_top + 40, win_left + 400, win_top + 380)
-        self._emit_log(f"截取下拉区域1: {region}")
 
-        img = _screenshot_region(*region)
-        if img is None:
-            self._emit_log("截图下拉菜单失败", "error")
-            return False
-
-        self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
-
-        matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=self._emit_log)
-        if matches:
-            cx, cy, text = matches[0]
-            self._emit_log(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
-            if hwnd:
-                try:
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    time.sleep(0.15)
-                except Exception:
-                    pass
-            _mouse_click(hwnd, cx, cy)
-            time.sleep(2.0)
-            return True
-
-        self._emit_log(f"第一区域未找到'网络查找'，扩大范围再试...")
-
-        region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
-        self._emit_log(f"扩大截取区域2: {region2}")
-        img2 = _screenshot_region(*region2)
-        if img2 is not None:
-            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1], glog=self._emit_log)
-            if matches2:
-                cx, cy, text = matches2[0]
-                self._emit_log(f"OCR(扩区) 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
+        def _try_click_dropdown(region, label):
+            """尝试截取指定区域并 OCR 识别点击"""
+            self._emit_log(f"截取下拉区域{label}: {region}")
+            img = _screenshot_region(*region)
+            if img is None:
+                self._emit_log("截图下拉菜单失败", "error")
+                return False
+            self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
+            matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=self._emit_log)
+            if matches:
+                cx, cy, text = matches[0]
+                self._emit_log(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
                 if hwnd:
                     try:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
                         time.sleep(0.15)
                     except Exception:
                         pass
-                _mouse_click(hwnd, cx, cy)
+                _mouse_click(cx, cy)
                 time.sleep(2.0)
                 return True
+            return False
 
-        # 诊断输出：列出识别到的文字
+        # 第1次尝试：搜索框正下方
+        region1 = (win_left, win_top + 40, win_left + 400, win_top + 380)
+        if _try_click_dropdown(region1, "1"):
+            return True
+
+        # 第2次尝试：扩大范围
+        region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
+        if _try_click_dropdown(region2, "2(扩区)"):
+            return True
+
+        # 均失败：诊断输出
         try:
-            entries, rows, full_text = _ocr_get_text_entries(img)
-            all_entries = []
-            for row in rows:
-                all_entries.extend(row)
-            all_text = " | ".join(e["text"] for e in all_entries[:15])
-            self._emit_log(f"OCR识别到的全部文字({len(all_entries)}条): {all_text}", "warn")
+            diag_img = _screenshot_region(*region1)
+            if diag_img is None:
+                diag_img = _screenshot_region(*region2)
+            if diag_img is not None:
+                entries, rows, full_text = _ocr_get_text_entries(diag_img)
+                if entries:
+                    all_text = " | ".join(e["text"] for e in entries[:15])
+                    self._emit_log(f"OCR识别到的全部文字({len(entries)}条): {all_text}", "warn")
         except Exception as e2:
             self._emit_log(f"OCR调试输出异常: {e2}", "error")
 

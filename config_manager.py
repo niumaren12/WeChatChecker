@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "account_interval_min": 3,
     "account_interval_max": 5,
     "max_rounds": 100,
+    "sound_enabled": True,
 }
 
 

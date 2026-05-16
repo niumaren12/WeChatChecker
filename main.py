@@ -44,6 +44,7 @@ class WeChatCheckerApp:
         self._abnormal_dict: dict[str, AbnormalEntry] = {}
         self._sound_muted = False
         self._beep_after_id: str | None = None
+        self._beep_stopped = False  # 防止竞态：_stop_beep 后 _beep_loop 重新注册 after
 
         # 创建主窗口
         self.root = tk.Tk()
@@ -211,6 +212,12 @@ class WeChatCheckerApp:
         ttk.Spinbox(
             param_frame, from_=1, to=9999,
             textvariable=self.max_rounds_var, width=6
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        # 声音提醒开关
+        self.sound_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            param_frame, text="声音提醒", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
 
         # ---- 控制按钮区域 ----
@@ -363,6 +370,7 @@ class WeChatCheckerApp:
         self.ai_min_var.set(str(self.config.get("account_interval_min", 3)))
         self.ai_max_var.set(str(self.config.get("account_interval_max", 5)))
         self.max_rounds_var.set(str(self.config.get("max_rounds", 100)))
+        self.sound_enabled_var.set(self.config.get("sound_enabled", True))
         # 从文件加载微信号列表到界面
         self._load_ids_to_listbox()
 
@@ -391,6 +399,8 @@ class WeChatCheckerApp:
             self.config.set("max_rounds", int(self.max_rounds_var.get()))
         except ValueError:
             pass
+
+        self.config.set("sound_enabled", self.sound_enabled_var.get())
 
     def _browse_wechat_path(self):
         """浏览选择微信可执行文件"""
@@ -545,7 +555,6 @@ class WeChatCheckerApp:
         if count == 0:
             self.abnormal_count_label.configure(text="")
             self.abnormal_canvas.configure(bg="#f0f0f0")
-            self._sound_muted = False
             self.stop_sound_btn.configure(
                 state=tk.DISABLED, text="🔇 停止声音"
             )
@@ -613,11 +622,14 @@ class WeChatCheckerApp:
 
     def _ensure_beeping(self):
         """确保声音警报正在播放（必须在主线程调用）。"""
+        if not self.sound_enabled_var.get():
+            return
         if self._sound_muted:
             return
         self.stop_sound_btn.configure(state=tk.NORMAL, text="🔇 停止声音")
         if self._beep_after_id is not None:
             return  # 已在蜂鸣中
+        self._beep_stopped = False
         self._beep_loop()
 
     def _beep_loop(self):
@@ -639,10 +651,15 @@ class WeChatCheckerApp:
         except Exception:
             pass
 
+        # 防止竞态：_stop_beep 可能在 Beep 期间被调用
+        if self._beep_stopped:
+            self._beep_after_id = None
+            return
         self._beep_after_id = self.root.after(1500, self._beep_loop)
 
     def _stop_beep(self):
         """停止声音警报循环。"""
+        self._beep_stopped = True
         if self._beep_after_id is not None:
             self.root.after_cancel(self._beep_after_id)
             self._beep_after_id = None
