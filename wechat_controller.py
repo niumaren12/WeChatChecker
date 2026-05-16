@@ -208,10 +208,10 @@ def _screenshot_rect(left, top, right, bottom, filepath):
     hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
     h_bmp = ctypes.windll.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
     ctypes.windll.gdi32.SelectObject(hdc_mem, h_bmp)
-    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, 0x00CC0020)  # SRCCOPY
+    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, 0x00CC0020)
 
-    # 获取像素数据
-    class BITMAPINFOHEADER(ctypes.Structure):
+    # BITMAPINFOHEADER
+    class BI(ctypes.Structure):
         _fields_ = [
             ("biSize", ctypes.c_uint), ("biWidth", ctypes.c_int), ("biHeight", ctypes.c_int),
             ("biPlanes", ctypes.c_ushort), ("biBitCount", ctypes.c_ushort),
@@ -220,34 +220,33 @@ def _screenshot_rect(left, top, right, bottom, filepath):
             ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
         ]
 
-    bi = BITMAPINFOHEADER()
-    bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bi = BI()
+    bi.biSize = ctypes.sizeof(BI)
     bi.biWidth = width
     bi.biHeight = height
     bi.biPlanes = 1
     bi.biBitCount = 32
-    bi.biCompression = 0  # BI_RGB
+    bi.biCompression = 0
 
-    # 分配缓冲区并获取像素
+    # 获取像素数据
     buf_size = width * height * 4
     buf = (ctypes.c_ubyte * buf_size)()
     ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
 
-    # 写 BMP 文件
-    bmp_header = b'BM'
-    file_size = 54 + buf_size
-    bmp_header += file_size.to_bytes(4, 'little')
-    bmp_header += b'\x00\x00\x00\x00'  # reserved
-    bmp_header += (54).to_bytes(4, 'little')  # data offset
-    bmp_header += bytes(bi)
-    # BMP 是倒序行，反转
+    # 用 struct.pack 写 BMP（避免 ctypes bytes 转换溢出）
+    import struct
     row_size = width * 4
-    bmp_data = b''
+    file_size = 54 + buf_size
+    bmp_data = bytearray()
+    # 文件头 14 字节
+    bmp_data += struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
+    # BITMAPINFOHEADER 40 字节
+    bmp_data += struct.pack('<IiiHHIIiiII', 40, width, height, 1, 32, 0, buf_size, 0, 0, 0, 0)
+    # 像素数据（BMP 倒序行）
     for y in range(height - 1, -1, -1):
         bmp_data += bytes(buf[y * row_size:(y + 1) * row_size])
 
     with open(filepath, 'wb') as f:
-        f.write(bmp_header)
         f.write(bmp_data)
 
     # 清理
