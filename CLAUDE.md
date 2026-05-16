@@ -59,7 +59,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - `mss` + `Pillow` + `pytesseract` — OCR 文字识别链路
 - Tesseract 引擎 — 系统级依赖，CI 中通过 choco 安装后打入 exe，运行时自动解压
 
-**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 三级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
+**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
 
 ## 关键：微信 PC 4.x 是 CEF/Chromium 应用（进程名 Weixin.exe）
 
@@ -74,16 +74,16 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - **下拉菜单和弹窗检测用 Tesseract OCR（内置打包）**：截图 → pytesseract 识别文字 → 获取坐标/判断文字存在
   - Tesseract 引擎 + 中文语言包通过 PyInstaller `--add-data` 打包进 exe，运行时自动解压
   - `_get_tesseract_path()` 优先用打包版，源码运行时从 PATH 找
-  - 下拉：mss 截图搜索框下方 → pytesseract 找"网络查找" → `_mouse_click` 点击文字中心
-  - 弹窗：保留 UIA 三级搜索定位弹窗 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
+  - 下拉：mss 截图搜索框下方 → pytesseract 找"网络查找" → `_mouse_click`（SetCursorPos+mouse_event 真实鼠标事件）点击文字中心
+  - 弹窗：UIA 两级搜索定位弹窗 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
 
 ## 微信窗口操作流程
 
 1. `activate_window`: Win32 `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow`
 2. `focus_search_box`: `_send_hotkey(ctrl, f)` → 等待 1.5s
 3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板
-4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → pytesseract 识别"网络查找" → `_mouse_click` 点击文字中心
-5. `check_popup_status`: 三级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
+4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → pytesseract 识别"网络查找" → `_mouse_click`（SetCursorPos+mouse_event 真实鼠标事件）点击文字中心
+5. `check_popup_status`: 两级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
 
 ## OCR 文字识别（Tesseract 内置打包）
 
@@ -98,7 +98,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 两个核心场景：
 1. **下拉菜单**：截图搜索框下方区域 → OCR 找"网络查找" → 鼠标点击
-2. **弹窗按钮**：保留 UIA 三级搜索定位弹窗 → 截图弹窗 → OCR 检查"添加到通讯录"
+2. **弹窗按钮**：UIA 两级搜索定位弹窗 → 截图弹窗 → OCR 检查"添加到通讯录"
 
 依赖：`pytesseract>=0.3.10`、`mss>=9.0.0`、`Pillow>=10.0.0`、Tesseract 引擎（CI 构建时通过 choco 安装后打入 exe）
 
@@ -106,12 +106,12 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 `WeChatController._gui_log` 由 `CheckerEngine.__init__` 注入为 `_emit_log`，使 wechat_controller 内部日志（如 OCR 识别结果）能同时写 logger 和 GUI。避免了 wechat_controller 直接依赖 tkinter。
 
-## 弹窗搜索（三级）
+## 弹窗搜索（两级）
 
-微信的"添加朋友"面板不是独立顶层窗口（CEF 渲染），需要三级搜索：
+微信的"添加朋友"面板不是独立顶层窗口（CEF 渲染），需要两级搜索：
 1. `WindowControl(Name="添加朋友", searchDepth=3)` — 深层独立窗口
 2. `self.wechat_window.PaneControl(Name="添加朋友", searchDepth=10)` — 主窗口内面板
-3. 兜底：直接用微信主窗口作为全局遍历范围
+3. 均未找到则直接返回 `not_found`，不再截图微信主窗口（点击未生效，报错即可）
 
 ## 线程模型
 

@@ -455,25 +455,26 @@ def _ocr_contains_text(image, target_text, glog=None):
 
 
 def _mouse_click(hwnd, x, y):
-    """向指定窗口发送后台鼠标点击（屏幕绝对坐标），不移动用户光标。
+    """在屏幕绝对坐标执行真实鼠标点击。
 
-    使用 SendMessageTimeoutW：同步等待目标窗口处理，带 2 秒超时避免死锁。
+    使用 SetCursorPos + mouse_event 产生硬件级鼠标事件。
+    微信 CEF 下拉菜单不响应 PostMessage/SendMessage 窗口消息，
+    必须用真实鼠标事件才能触发 CEF 内部的点击处理。
     """
-    pt = ctypes.wintypes.POINT(int(x), int(y))
-    ctypes.windll.user32.ScreenToClient(hwnd, ctypes.byref(pt))
-    lparam = (pt.y << 16) | (pt.x & 0xFFFF)
+    # 保存当前鼠标位置，点击后恢复
+    orig = ctypes.wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(orig))
 
-    result = ctypes.c_ulong()
-    # WM_LBUTTONDOWN
-    ctypes.windll.user32.SendMessageTimeoutW(
-        hwnd, 0x0201, 0x0001, lparam, 0x0000, 2000, ctypes.byref(result)
-    )
-    time.sleep(0.05)
-    # WM_LBUTTONUP
-    ctypes.windll.user32.SendMessageTimeoutW(
-        hwnd, 0x0202, 0, lparam, 0x0000, 2000, ctypes.byref(result)
-    )
-    time.sleep(0.05)
+    try:
+        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+        time.sleep(0.03)
+        ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+        time.sleep(0.05)
+        ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+        time.sleep(0.05)
+    finally:
+        # 恢复鼠标位置
+        ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
 
 
 class WeChatController:
@@ -772,12 +773,13 @@ class WeChatController:
     def check_popup_status(self):
         """
         检查弹出的"添加朋友"窗口
-        检测有无头像控件 + 昵称控件 + "添加到通讯录"按钮
+        OCR 识别弹窗内是否有"添加到通讯录"按钮来判断账号状态。
+        两级搜索弹窗：独立窗口 → 主窗口内面板，均未找到则直接报 not_found。
 
         返回:
             ("normal", nickname) — 正常
             ("abnormal", reason) — 异常
-            ("not_found", "")     — 未找到弹窗
+            ("not_found", "")     — 未找到弹窗（点击可能未生效）
         """
         if not UIA_AVAILABLE:
             return ("not_found", "")
@@ -786,7 +788,7 @@ class WeChatController:
             # 等待弹窗出现（CEF 面板加载较慢）
             time.sleep(2.0)
 
-            # 查找弹窗 — 三级搜索
+            # 查找弹窗 — 两级搜索：独立窗口 + 主窗口内面板
             popup = None
 
             # 第1级：搜索较深层的独立窗口（searchDepth=3）
@@ -813,25 +815,9 @@ class WeChatController:
                     except Exception:
                         continue
 
-            # 第3级：兜底用微信主窗口本身作为搜索范围
+            # 第1-2级均未找到弹窗，说明点击未生效，直接返回
             if popup is None:
-                self._emit_log("未找到独立弹窗，使用微信主窗口作为搜索范围")
-                popup = self.wechat_window if self.wechat_window else auto.GetRootControl()
-
-            if popup is None:
-                # 诊断：列出桌面所有顶层窗口
-                try:
-                    all_top = auto.GetRootControl().GetChildren()
-                    self._emit_log(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
-                    for w in all_top[:15]:
-                        try:
-                            self._emit_log(f"  [{w.ClassName}] Name='{w.Name}' "
-                                           f"Rect={w.BoundingRectangle}")
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                self._emit_log("未找到任何弹窗或微信窗口")
+                self._emit_log("未找到弹窗，点击可能未生效")
                 return ("not_found", "")
 
             # 不激活弹窗，避免抢前台
