@@ -196,72 +196,14 @@ def _type_text(text):
         logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
-def _screenshot_rect(left, top, right, bottom, filepath):
-    """用 Win32 GDI 截取屏幕矩形区域，保存为 BMP 文件（零依赖）"""
+def _capture_pixels(hwnd, left, top, right, bottom):
+    """截取窗口区域，返回 (width, height, pixels_bgra)。
+    pixels_bgra 是 bytes，每4字节为 B,G,R,A（BMP 格式，底部行在前）。
+    调用方用 _get_pixel(pixels, width, x, y) 读取指定坐标颜色。"""
     width = right - left
     height = bottom - top
     if width <= 0 or height <= 0:
-        return False
-
-    # 获取屏幕 DC
-    hdc_screen = ctypes.windll.user32.GetDC(0)
-    hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
-    h_bmp = ctypes.windll.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
-    ctypes.windll.gdi32.SelectObject(hdc_mem, h_bmp)
-    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, 0x00CC0020)
-
-    # BITMAPINFOHEADER
-    class BI(ctypes.Structure):
-        _fields_ = [
-            ("biSize", ctypes.c_uint), ("biWidth", ctypes.c_int), ("biHeight", ctypes.c_int),
-            ("biPlanes", ctypes.c_ushort), ("biBitCount", ctypes.c_ushort),
-            ("biCompression", ctypes.c_uint), ("biSizeImage", ctypes.c_uint),
-            ("biXPelsPerMeter", ctypes.c_int), ("biYPelsPerMeter", ctypes.c_int),
-            ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
-        ]
-
-    bi = BI()
-    bi.biSize = ctypes.sizeof(BI)
-    bi.biWidth = width
-    bi.biHeight = height
-    bi.biPlanes = 1
-    bi.biBitCount = 32
-    bi.biCompression = 0
-
-    # 获取像素数据
-    buf_size = width * height * 4
-    buf = (ctypes.c_ubyte * buf_size)()
-    ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
-
-    # 用 struct.pack 写 BMP（避免 ctypes bytes 转换溢出）
-    import struct
-    row_size = width * 4
-    file_size = 54 + buf_size
-    bmp_data = bytearray()
-    # 文件头 14 字节
-    bmp_data += struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
-    # BITMAPINFOHEADER 40 字节
-    bmp_data += struct.pack('<IiiHHIIiiII', 40, width, height, 1, 32, 0, buf_size, 0, 0, 0, 0)
-    # 像素数据（BMP 倒序行）
-    for y in range(height - 1, -1, -1):
-        bmp_data += bytes(buf[y * row_size:(y + 1) * row_size])
-
-    with open(filepath, 'wb') as f:
-        f.write(bmp_data)
-
-    # 清理
-    ctypes.windll.gdi32.DeleteObject(h_bmp)
-    ctypes.windll.gdi32.DeleteDC(hdc_mem)
-    ctypes.windll.user32.ReleaseDC(0, hdc_screen)
-    return True
-
-
-def _screenshot_window(hwnd, left, top, right, bottom, filepath):
-    """截取指定窗口的内部区域（窗口相对坐标），保存为 BMP"""
-    width = right - left
-    height = bottom - top
-    if width <= 0 or height <= 0:
-        return False
+        return (0, 0, b"")
 
     hdc_win = ctypes.windll.user32.GetWindowDC(hwnd)
     hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_win)
@@ -277,7 +219,6 @@ def _screenshot_window(hwnd, left, top, right, bottom, filepath):
             ("biXPelsPerMeter", ctypes.c_int), ("biYPelsPerMeter", ctypes.c_int),
             ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
         ]
-
     bi = BI()
     bi.biSize = ctypes.sizeof(BI)
     bi.biWidth = width
@@ -290,22 +231,39 @@ def _screenshot_window(hwnd, left, top, right, bottom, filepath):
     buf = (ctypes.c_ubyte * buf_size)()
     ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
 
-    import struct
+    # 翻转行顺序：BMP 底部行在前 → 顶行在前
     row_size = width * 4
-    file_size = 54 + buf_size
-    bmp_data = bytearray()
-    bmp_data += struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
-    bmp_data += struct.pack('<IiiHHIIiiII', 40, width, height, 1, 32, 0, buf_size, 0, 0, 0, 0)
-    for y in range(height - 1, -1, -1):
-        bmp_data += bytes(buf[y * row_size:(y + 1) * row_size])
-
-    with open(filepath, 'wb') as f:
-        f.write(bmp_data)
+    pixels_topdown = bytearray(buf_size)
+    for y in range(height):
+        src_start = (height - 1 - y) * row_size
+        dst_start = y * row_size
+        pixels_topdown[dst_start:dst_start + row_size] = buf[src_start:src_start + row_size]
 
     ctypes.windll.gdi32.DeleteObject(h_bmp)
     ctypes.windll.gdi32.DeleteDC(hdc_mem)
     ctypes.windll.user32.ReleaseDC(hwnd, hdc_win)
-    return True
+    return (width, height, bytes(pixels_topdown))
+
+
+def _count_pixels(pixels, width, height, x1, y1, x2, y2, rgb_range):
+    """统计矩形区域内匹配颜色范围的像素数。
+    rgb_range: ((r_min,r_max), (g_min,g_max), (b_min,b_max))"""
+    count = 0
+    (r_min, r_max), (g_min, g_max), (b_min, b_max) = rgb_range
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(width, x2)
+    y2 = min(height, y2)
+    for py in range(y1, y2):
+        row_start = py * width * 4
+        for px in range(x1, x2):
+            offset = row_start + px * 4
+            b = pixels[offset]
+            g = pixels[offset + 1]
+            r = pixels[offset + 2]
+            if r_min <= r <= r_max and g_min <= g <= g_max and b_min <= b <= b_max:
+                count += 1
+    return count
 
 
 class WeChatController:
@@ -514,19 +472,60 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        键盘 ↑+Enter：微信默认选中"搜索网络结果"，↑回到"网络查找"
+        像素检测绿色图标位置 → SetCursorPos + mouse_event 点击
         """
         if not UIA_AVAILABLE:
             return False
 
         try:
             time.sleep(1.5)
-            _press_key(0x26)  # VK_UP → "网络查找手机/QQ号"
+
+            # 截取微信窗口搜索框下方下拉区域
+            if self.wechat_window:
+                hwnd = self.wechat_window.NativeWindowHandle
+                if hwnd:
+                    r = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+                    win_w = r.right - r.left
+                    # 截取搜索框+下拉区域：从 y=60 到 y=330
+                    w, h, pixels = _capture_pixels(hwnd, 0, 60, win_w, 330)
+                    if w > 0 and h > 0:
+                        # 扫描找绿色图标（网络查找，左侧 y=130~190 区域）
+                        # 绿色范围 RGB: R=(0,80), G=(150,255), B=(0,120)
+                        green_range = ((0, 80), (150, 255), (0, 120))
+                        green_x, green_y, green_max = 0, 0, 0
+                        for scan_y in range(70, min(140, h)):
+                            cnt = _count_pixels(pixels, w, h, 10, scan_y, 80, scan_y + 3, green_range)
+                            if cnt > green_max:
+                                green_max = cnt
+                                green_y = scan_y
+
+                        if green_max > 5:
+                            # 找到绿色图标，计算屏幕绝对坐标
+                            screen_x = r.left + 40  # 图标中心大约在 x=40 处
+                            screen_y = r.top + 60 + green_y  # 窗口内 y + 扫描偏移
+                            _glog = self._gui_log
+                            if _glog:
+                                _glog(f"绿色图标: y={green_y}, 绿色像素={green_max}, "
+                                      f"屏幕坐标=({screen_x},{screen_y})")
+                            # 鼠标点击
+                            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+                            time.sleep(0.1)
+                            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+                            time.sleep(0.05)
+                            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+                            time.sleep(2.0)
+                            logger.info(f"已通过像素定位+鼠标点击下拉项 ({screen_x},{screen_y})")
+                            return True
+
+            # 回退：键盘 ↑+Enter
+            logger.info("像素检测未找到绿色图标，回退键盘 ↑+Enter")
+            _press_key(0x26)  # VK_UP
             time.sleep(0.3)
-            _press_key(0x0D)  # VK_RETURN → 打开
+            _press_key(0x0D)  # VK_RETURN
             time.sleep(2.0)
-            logger.info("已通过键盘 ↑+Enter 选择下拉项")
             return True
+
         except Exception as e:
             logger.error(f"点击下拉项失败: {e}")
             return False
@@ -628,67 +627,40 @@ class WeChatController:
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
 
-            # 从桌面根控件全局遍历，筛选弹窗范围内的控件
-            found_ctrls = []  # (ctrl_type, name, rect)
+            # 像素检测"添加到通讯录"按钮（灰色 RGB≈204,204,204）
             has_add_button = False
             nickname_text = ""
 
-            if popup_rect:
-                def collect_in_rect(ctrl, depth=0):
-                    nonlocal has_add_button, nickname_text
-                    if depth > 20:
-                        return
-                    try:
-                        ctrl_rect = ctrl.BoundingRectangle
-                        # 检查控件位置是否在弹窗范围内（有交集即可）
-                        if (ctrl_rect[2] > popup_rect[0] and ctrl_rect[0] < popup_rect[2] and
-                            ctrl_rect[3] > popup_rect[1] and ctrl_rect[1] < popup_rect[3]):
-                            ctrl_type = type(ctrl).__name__
-                            name = ctrl.Name
-                            found_ctrls.append((ctrl_type, name, ctrl_rect))
+            if popup_rect and popup_hwnd:
+                pw = popup_rect[2] - popup_rect[0]
+                ph = popup_rect[3] - popup_rect[1]
+                w, h, pixels = _capture_pixels(popup_hwnd, 0, 0, pw, ph)
+                if w > 0 and h > 0:
+                    # 按钮在弹窗底部 80%-95% 区域，水平居中
+                    btn_x1 = int(w * 0.10)
+                    btn_y1 = int(h * 0.80)
+                    btn_x2 = int(w * 0.90)
+                    btn_y2 = int(h * 0.95)
+                    # 灰色按钮 RGB 范围: (170-240, 170-240, 170-240)
+                    gray_range = ((170, 240), (170, 240), (170, 240))
+                    gray_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, gray_range)
+                    total_in_rect = (btn_x2 - btn_x1) * (btn_y2 - btn_y1)
+                    gray_pct = gray_count / total_in_rect * 100 if total_in_rect > 0 else 0
+                    has_add_button = gray_pct > 15  # 超过 15% 的像素是灰色 → 按钮存在
+                    _glog(f"像素检测: 灰色像素={gray_count}/{total_in_rect} ({gray_pct:.0f}%) → "
+                          f"按钮={'存在' if has_add_button else '不存在'}")
+                else:
+                    _glog("像素截图失败，回退到弹窗打开=正常")
 
-                            # 检测"添加到通讯录"按钮
-                            if "Button" in ctrl_type and name in ["添加到通讯录", "添加", "发消息"]:
-                                has_add_button = True
-                                logger.info(f"全局遍历找到按钮: {name}")
-
-                            # 检测候选昵称
-                            if not nickname_text and ("Text" in ctrl_type or "Edit" in ctrl_type):
-                                if name and name not in self.NICKNAME_EXCLUDE and 1 <= len(name) <= 20:
-                                    nickname_text = name
-                                    logger.info(f"全局遍历找到候选昵称: {name}")
-
-                        # 继续遍历子控件
-                        for child in ctrl.GetChildren():
-                            collect_in_rect(child, depth + 1)
-                    except Exception:
-                        pass
-
-                try:
-                    collect_in_rect(auto.GetRootControl())
-                except Exception as e:
-                    logger.warning(f"全局遍历异常: {e}")
-
-            # 输出找到的控件列表
-            _glog(f"=== 弹窗范围内控件 (共{len(found_ctrls)}个) ===")
-            for ctrl_type, name, rect in found_ctrls[:40]:
-                _glog(f"  {ctrl_type}: [{name}] @ ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})")
-            if len(found_ctrls) > 40:
-                _glog(f"  ... 省略 {len(found_ctrls)-40} 个")
-            _glog("=== 控件列表结束 ===")
-
-            # 判断逻辑 — CEF 弹窗内部无 UIA 控件，以弹窗是否打开为主要判据
-            diag = f"弹窗: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)}"
-            logger.info(diag)
-            self._last_popup_diag = diag
-
+            # 判断逻辑
             if has_add_button:
-                return ("normal", nickname_text or "(未识别昵称)")
-
-            # CEF 弹窗：无内部控件但弹窗已打开 → 判定为正常
-            # 异常号（用户不存在）不会弹出"添加朋友"窗口，会走到 not_found 分支
-            _glog("CEF弹窗: 内部控件不可见，弹窗已打开→判定正常")
-            return ("normal", "(CEF弹窗已打开)" if len(found_ctrls) == 0 else f"(控件{len(found_ctrls)}个)")
+                _glog("弹窗检测: 找到'添加到通讯录'按钮 → 正常")
+                return ("normal", "(已识别按钮)")
+            elif popup_rect:
+                _glog("弹窗检测: 未找到按钮，但弹窗已打开 → 正常(CEF兼容)")
+                return ("normal", "(CEF弹窗)")
+            else:
+                return ("abnormal", "弹窗未打开")
 
         except Exception as e:
             logger.error(f"检测弹窗状态时出错: {e}")
