@@ -687,14 +687,14 @@ class WeChatController:
 
         # 清空搜索框已有内容
         _send_hotkey(_VK["ctrl"], _VK["a"])
-        time.sleep(0.2)
+        self._sleep(0.2)
         _press_key(_VK["delete"])
-        time.sleep(0.2)
+        self._sleep(0.2)
 
         # 方法A: SendInput 逐字符输入
         try:
             _type_text(wechat_id)
-            time.sleep(0.3)
+            self._sleep(0.3)
             logger.debug(f"已通过 SendInput 输入微信号: {wechat_id}")
             return True
         except Exception as e:
@@ -712,9 +712,9 @@ class WeChatController:
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, timeout=10
             )
-            time.sleep(0.2)
+            self._sleep(0.2)
             _send_hotkey(_VK["ctrl"], _VK["v"])
-            time.sleep(0.3)
+            self._sleep(0.3)
             logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
             return True
         except Exception as e2:
@@ -854,7 +854,7 @@ class WeChatController:
                 return ("not_found", "")
 
             # 不激活弹窗，避免抢前台
-            time.sleep(0.5)
+            self._sleep(0.5)
 
             # 获取弹窗屏幕位置范围（优先 Win32 API，更可靠）
             popup_rect = None
@@ -925,13 +925,13 @@ class WeChatController:
                     hwnd = popup.NativeWindowHandle
                     if hwnd:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        time.sleep(0.2)
+                        self._sleep(0.2)
                 except Exception:
                     pass
 
             # 发送 ESC 关闭弹窗
             _press_key(_VK["escape"])
-            time.sleep(0.5)
+            self._sleep(0.5)
             logger.debug("已关闭弹窗(ESC)")
         except Exception as e:
             logger.error(f"关闭弹窗失败: {e}")
@@ -942,9 +942,9 @@ class WeChatController:
             return
         try:
             _send_hotkey(_VK["ctrl"], _VK["a"])
-            time.sleep(0.2)
+            self._sleep(0.2)
             _press_key(_VK["delete"])
-            time.sleep(0.3)
+            self._sleep(0.3)
             logger.debug("搜索框已清空")
         except Exception as e:
             logger.error(f"清空搜索框失败: {e}")

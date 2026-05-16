@@ -108,13 +108,19 @@ class CheckerEngine:
         config_snapshot = self._build_config_snapshot()
 
         # 在子线程中运行检查
-        thread = threading.Thread(
-            target=self._run_check_loop,
-            args=(ids, config_snapshot),
-            daemon=True,
-            name="CheckerThread",
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._run_check_loop,
+                args=(ids, config_snapshot),
+                daemon=True,
+                name="CheckerThread",
+            )
+            thread.start()
+        except Exception as e:
+            self._running = False
+            self._emit_log(f"启动检查线程失败: {e}", "error")
+            return
+
         self._emit_log(f"检查启动，共 {len(ids)} 个微信号")
 
     def start_with_ids(self, ids_list):
@@ -227,20 +233,15 @@ class CheckerEngine:
                             break
                         status, detail = self.wechat.check_single_account(wechat_id)
 
-                        # 停止信号检查：OCR 等阻塞操作期间用户可能点了停止
-                        if self._stop_event.is_set():
-                            self.checked_accounts.append({
-                                "id": wechat_id,
-                                "status": status,
-                                "detail": detail,
-                            })
-                            break
-
                         self.checked_accounts.append({
                             "id": wechat_id,
                             "status": status,
                             "detail": detail,
                         })
+
+                        # 停止信号检查：OCR 等阻塞操作期间用户可能点了停止
+                        if self._stop_event.is_set():
+                            break
 
                         if status == "abnormal":
                             self._emit_log(

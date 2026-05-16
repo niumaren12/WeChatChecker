@@ -136,3 +136,52 @@ CI 流程 (`build.yml`)：
 6. `pyinstaller --clean WeChatChecker.spec` 打包
 7. 复制 `config.json`、`wechat_ids.txt` 到 `dist/`
 8. `actions/upload-artifact@v4` 上传整个 `dist/` 目录
+
+## 常见问题排查（踩坑记录）
+
+### 换台电脑卡死/没反应
+
+**症状**: 日志停在"第 1/1 批"之后，长时间无输出。
+
+**根因**: `activate_window()` 对每号都执行 4 次 UIA 窗口搜索（3 类名 + 1 标题），每次 `maxSearchSeconds` 等待。类名不匹配时 9 个号 × 4 秒 = 36 秒。
+
+**修复**: 窗口句柄缓存 — 首次搜索成功后存 `self.wechat_window`，后续直接用 Win32 `IsWindow` 验证 + `ShowWindow`/`SetForegroundWindow` 激活（秒级）。类名搜索超时从 1s 降到 0.5s。
+
+**另一根因**: uiautomation 底层用 Windows COM，子线程不会自动初始化。`_run_check_loop` 开头调用 `CoInitializeEx(None, 2)`。
+
+### OCR 识别不到"网络查找"
+
+**症状**: OCR 输出碎片如"网|络|柳|:"，找不到"网络查找"。
+
+**根因**: 固定阈值二值化（`.point(lambda p: 255 if p > 140 else 0)`）在不同屏幕/ClearType 下效果完全不同。细笔画字（"查"、"找"）被截断消失。Tesseract 4.x 内部有自适应二值化，手写固定阈值是多余且有害的。
+
+**修复**: 三通道预处理管道 — ①不做二值化（灰度直送 Tesseract）→ ②阈值 100 → ③阈值 140（兼容）。任一通道有结果即返回。同时匹配目标从"网络查找"扩展到"络找"（处理"查"完全不可读的情况）。
+
+**教训**: 不要手写图像二值化阈值，Tesseract 自己能做更好。多通道回退是跨机器兼容的关键。
+
+### 下拉菜单点击无响应
+
+**症状**: OCR 找到文字但点击后弹窗不出现。
+
+**根因**: `PostMessageW`/`SendMessageW` 发送窗口消息点击，微信 CEF 渲染的下拉菜单不响应窗口消息。
+
+**修复**: 改用 `SetCursorPos` + `mouse_event` 硬件级鼠标事件。点击前后保存/恢复用户鼠标位置。
+
+### 停止按钮延迟
+
+**症状**: 点停止后状态栏显示"正在停止..."持续数秒。
+
+**根因**: `pytesseract.image_to_data()` 是阻塞 C 调用，期间线程无法检查 `_stop_event`。所有 `time.sleep()` 应改用 `_sleep()`（内部用 `Event.wait(timeout)` 实现可中断等待）。
+
+**修复**: 
+- WeChatController 所有等待改为 `self._sleep()` 
+- `check_single_account` 在 OCR/点击完成后立即检查 `_stop_event`
+- 异常发现后不停止（改为非阻塞通知面板），消除模态弹窗阻塞
+
+### exe 换机器运行提示 Tesseract 不可用
+
+**症状**: 启动后日志显示"Tesseract OCR 不可用"。
+
+**根因**: PyInstaller 打包的 tesseract.exe 依赖 VC++ 运行时。极少数精简版 Windows 缺少。自检代码 `_check_runtime_env` 会在启动 500ms 后检测并警告。
+
+**解决**: CI 构建的 exe 已通过 choco 安装 tesseract 并打入 bundle。如仍不可用，安装 [VC++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
