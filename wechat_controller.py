@@ -760,26 +760,29 @@ class WeChatController:
         win_left, win_top, win_right, win_bottom = rect
 
         def _try_click_dropdown(region, label):
-            """尝试截取指定区域并 OCR 识别点击"""
+            """尝试截取指定区域并 OCR 识别点击，支持多级匹配回退"""
             self._emit_log(f"截取下拉区域{label}: {region}")
             img = _screenshot_region(*region)
             if img is None:
                 self._emit_log("截图下拉菜单失败", "error")
                 return False
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
-            matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=self._emit_log)
-            if matches:
-                cx, cy, text = matches[0]
-                self._emit_log(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
-                if hwnd:
-                    try:
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        time.sleep(0.15)
-                    except Exception:
-                        pass
-                _mouse_click(cx, cy)
-                self._sleep(2.0)
-                return True
+
+            # 多级匹配：从最精确到最宽松
+            for target in ("网络查找", "络找"):
+                matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
+                if matches:
+                    cx, cy, text = matches[0]
+                    self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy})")
+                    if hwnd:
+                        try:
+                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                            time.sleep(0.15)
+                        except Exception:
+                            pass
+                    _mouse_click(cx, cy)
+                    self._sleep(2.0)
+                    return True
             return False
 
         # 第1次尝试：搜索框正下方
