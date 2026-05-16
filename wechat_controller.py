@@ -453,13 +453,16 @@ def _ocr_contains_text(image, target_text, glog=None):
     return False
 
 
-def _mouse_click(x, y):
-    """移动鼠标到屏幕绝对坐标并左键点击"""
-    ctypes.windll.user32.SetCursorPos(int(x), int(y))
-    time.sleep(0.05)
-    ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+def _mouse_click(hwnd, x, y):
+    """向指定窗口发送后台鼠标点击（屏幕绝对坐标），不移动用户光标"""
+    # 屏幕坐标 → 窗口客户区坐标
+    pt = ctypes.wintypes.POINT(int(x), int(y))
+    ctypes.windll.user32.ScreenToClient(hwnd, ctypes.byref(pt))
+    lparam = (pt.y << 16) | (pt.x & 0xFFFF)
+
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0201, 0x0001, lparam)  # WM_LBUTTONDOWN
     time.sleep(0.03)
-    ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, lparam)       # WM_LBUTTONUP
     time.sleep(0.05)
 
 
@@ -683,6 +686,7 @@ class WeChatController:
 
         time.sleep(1.5)
 
+        hwnd = None
         rect = None
         if self.wechat_window:
             try:
@@ -715,16 +719,14 @@ class WeChatController:
         matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=_glog)
         if matches:
             cx, cy, text = matches[0]
-            _glog(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
-            if self.wechat_window:
+            _glog(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
+            if hwnd:
                 try:
-                    wh = self.wechat_window.NativeWindowHandle
-                    if wh:
-                        ctypes.windll.user32.SetForegroundWindow(wh)
-                        time.sleep(0.15)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    time.sleep(0.15)
                 except Exception:
                     pass
-            _mouse_click(cx, cy)
+            _mouse_click(hwnd, cx, cy)
             time.sleep(2.0)
             return True
 
@@ -737,16 +739,14 @@ class WeChatController:
             matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1], glog=_glog)
             if matches2:
                 cx, cy, text = matches2[0]
-                _glog(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
-                if self.wechat_window:
+                _glog(f"OCR(扩区) 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
+                if hwnd:
                     try:
-                        wh = self.wechat_window.NativeWindowHandle
-                        if wh:
-                            ctypes.windll.user32.SetForegroundWindow(wh)
-                            time.sleep(0.15)
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        time.sleep(0.15)
                     except Exception:
                         pass
-                _mouse_click(cx, cy)
+                _mouse_click(hwnd, cx, cy)
                 time.sleep(2.0)
                 return True
 
