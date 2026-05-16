@@ -169,6 +169,13 @@ class CheckerEngine:
         ai_max = cfg["account_interval_max"]
         max_rounds = cfg["max_rounds"]
 
+        # 初始化 COM（uiautomation 依赖，子线程必须手动初始化）
+        try:
+            import ctypes
+            ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+        except Exception:
+            pass
+
         round_num = 0
 
         try:
@@ -213,8 +220,23 @@ class CheckerEngine:
                             f"第{round_num}轮 第{batch_idx+1}批"
                         )
 
-                        # 检查单个微信号
-                        status, detail = self.wechat.check_single_account(wechat_id)
+                        # 检查单个微信号（带超时保护，防止 COM/UIA 卡死）
+                        result = [None, None]
+
+                        def _do_check():
+                            result[0], result[1] = self.wechat.check_single_account(wechat_id)
+
+                        check_thread = threading.Thread(
+                            target=_do_check, daemon=True, name=f"Check-{wechat_id}"
+                        )
+                        check_thread.start()
+                        check_thread.join(timeout=30)
+
+                        if check_thread.is_alive():
+                            self._emit_log(f"检查 {wechat_id} 超时(30秒)，跳过", "error")
+                            status, detail = "error", "检查超时"
+                        else:
+                            status, detail = result[0], result[1]
 
                         self.checked_accounts.append({
                             "id": wechat_id,
