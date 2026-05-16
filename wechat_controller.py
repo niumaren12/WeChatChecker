@@ -491,59 +491,15 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        像素识别+鼠标点击，失败回退键盘
+        键盘 ↑+Enter（微信默认选中"搜索网络结果"，↑回到"网络查找"）
         """
         if not UIA_AVAILABLE:
             return False
 
         time.sleep(1.5)
-        glog = self._gui_log
-
-        # 尝试像素识别
-        pixel_ok = False
-        try:
-            if self.wechat_window:
-                hwnd = self.wechat_window.NativeWindowHandle
-                if hwnd:
-                    r = ctypes.wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
-                    win_w = r.right - r.left
-                    w, h, pixels = _capture_pixels(hwnd, 0, 60, win_w, 330)
-                    if w > 0 and h > 0:
-                        green_range = ((0, 80), (150, 255), (0, 120))
-                        green_y, green_max = 0, 0
-                        for scan_y in range(10, min(h - 3, 200)):
-                            cnt = _count_pixels(pixels, w, h, 10, scan_y, 80, scan_y + 3, green_range)
-                            if cnt > green_max:
-                                green_max = cnt
-                                green_y = scan_y
-
-                        if glog:
-                            glog(f"下拉像素扫描: 最大绿色={green_max} @ y={green_y}(窗口y={60+green_y})")
-
-                        if green_max > 3:
-                            screen_x = r.left + 40
-                            screen_y = r.top + 60 + green_y
-                            if glog:
-                                glog(f"找到绿色图标 → 鼠标点击({screen_x},{screen_y})")
-                            ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
-                            time.sleep(0.1)
-                            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
-                            time.sleep(0.05)
-                            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
-                            time.sleep(2.0)
-                            pixel_ok = True
-                            return True
-        except Exception as e:
-            if glog:
-                glog(f"像素识别异常: {e}")
-
-        # 回退：键盘 ↑+Enter
-        if glog:
-            glog(f"下拉选择: {'像素点击' if pixel_ok else '键盘↑+Enter'}")
-        _press_key(0x26)
+        _press_key(0x26)  # VK_UP → "网络查找手机/QQ号"
         time.sleep(0.3)
-        _press_key(0x0D)
+        _press_key(0x0D)  # VK_RETURN
         time.sleep(2.0)
         return True
 
