@@ -484,9 +484,18 @@ class WeChatController:
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
         截图搜索框下方区域 → winocr 识别 → 鼠标点击文字中心
         """
-        time.sleep(1.5)  # 等待下拉菜单渲染
+        def _glog(msg, level="info"):
+            if level == "info":
+                logger.info(msg)
+            elif level == "warn":
+                logger.warning(msg)
+            elif level == "error":
+                logger.error(msg)
+            if self._gui_log:
+                self._gui_log(msg)
 
-        # 获取微信窗口屏幕矩形（Win32 GetWindowRect，不受 DPI 影响）
+        time.sleep(1.5)
+
         rect = None
         if self.wechat_window:
             try:
@@ -495,54 +504,49 @@ class WeChatController:
                     r = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
                     rect = (r.left, r.top, r.right, r.bottom)
-                    logger.info(f"微信窗口位置: left={r.left} top={r.top} "
-                               f"right={r.right} bottom={r.bottom} "
-                               f"({r.right-r.left}x{r.bottom-r.top})")
+                    _glog(f"微信窗口位置: left={r.left} top={r.top} "
+                          f"right={r.right} bottom={r.bottom} "
+                          f"({r.right-r.left}x{r.bottom-r.top})")
             except Exception as e:
-                logger.error(f"获取窗口位置异常: {e}")
+                _glog(f"获取窗口位置异常: {e}", "error")
 
         if rect is None:
-            logger.error("无法获取微信窗口位置，无法截图下拉菜单")
+            _glog("无法获取微信窗口位置，无法截图下拉菜单", "error")
             return False
 
         win_left, win_top, win_right, win_bottom = rect
-        # 下拉菜单出现在搜索框下方，搜索框约在窗口顶部偏左
         region = (win_left, win_top + 40, win_left + 400, win_top + 380)
-        logger.info(f"截取下拉区域1: {region}")
+        _glog(f"截取下拉区域1: {region}")
 
         img = _screenshot_region(*region)
         if img is None:
-            logger.error("截图下拉菜单失败")
+            _glog("截图下拉菜单失败", "error")
             return False
 
-        logger.info(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
+        _glog(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
-        # OCR 识别，查找"网络查找"（兼容"网络查找手机/QQ号"等变体）
         matches = _ocr_find_text(img, "网络查找", region[0], region[1])
         if matches:
             cx, cy, text = matches[0]
-            logger.info(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+            _glog(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
             _mouse_click(cx, cy)
             time.sleep(2.0)
             return True
 
-        logger.info(f"区域1未找到'网络查找'，共{len(matches)}个匹配")
+        _glog(f"第一区域未找到'网络查找'，扩大范围再试...")
 
-        # 第一次没找到，扩大搜索区域再试
         region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
-        logger.info(f"扩大截取区域2: {region2}")
+        _glog(f"扩大截取区域2: {region2}")
         img2 = _screenshot_region(*region2)
         if img2 is not None:
             matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1])
             if matches2:
                 cx, cy, text = matches2[0]
-                logger.info(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+                _glog(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
                 _mouse_click(cx, cy)
                 time.sleep(2.0)
                 return True
-            logger.info(f"区域2也未找到'网络查找'，共{len(matches2)}个匹配")
 
-        # OCR 未找到，输出识别到的所有文字用于排查
         try:
             from winocr import recognize_pil_sync
             result = recognize_pil_sync(img)
@@ -551,11 +555,11 @@ class WeChatController:
                 (ln.get("text", "") if isinstance(ln, dict) else getattr(ln, "text", ""))
                 for ln in lines[:15]
             ])
-            logger.info(f"OCR识别到的全部文字({len(lines)}行): {all_text}")
+            _glog(f"OCR识别到的全部文字({len(lines)}行): {all_text}", "warn")
         except Exception as e2:
-            logger.error(f"OCR调试输出异常: {e2}")
+            _glog(f"OCR调试输出异常: {e2}", "error")
 
-        logger.error("OCR 未找到下拉菜单中的'网络查找'项")
+        _glog("OCR 未找到下拉菜单中的'网络查找'项", "error")
         return False
 
     # ==================== 弹窗检测 ====================
