@@ -517,8 +517,20 @@ class WeChatController:
     # ==================== 窗口管理 ====================
 
     def is_wechat_running(self):
-        """检查微信是否在运行 - 优先用进程名检查"""
-        # 方法1: 通过 psutil 检查进程（最可靠）
+        """检查微信是否在运行 — tasklist 优先（快），psutil 兜底（慢但可靠）"""
+        # 方法1: tasklist 精确匹配（最快，通常 <1s）
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {self.WECHAT_PROCESS}"],
+                capture_output=True, text=True, timeout=3
+            )
+            if self.WECHAT_PROCESS in result.stdout:
+                logger.debug("通过 tasklist 检测到微信进程运行中")
+                return True
+        except Exception as e:
+            logger.debug(f"tasklist 检查异常: {e}")
+
+        # 方法2: psutil 进程遍历（较慢但更可靠）
         try:
             import psutil
             for proc in psutil.process_iter(["name"]):
@@ -530,19 +542,7 @@ class WeChatController:
         except Exception as e:
             logger.debug(f"psutil 检查进程异常: {e}")
 
-        # 方法2: 通过 tasklist 检查进程
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {self.WECHAT_PROCESS}"],
-                capture_output=True, text=True, timeout=5
-            )
-            if self.WECHAT_PROCESS in result.stdout:
-                logger.debug("通过 tasklist 检测到微信进程运行中")
-                return True
-        except Exception as e:
-            logger.debug(f"tasklist 检查异常: {e}")
-
-        # 方法3: 通过 uiautomation 查找窗口（兜底）
+        # 方法3: uiautomation 查找窗口（兜底）
         if UIA_AVAILABLE:
             try:
                 for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
@@ -576,20 +576,36 @@ class WeChatController:
 
     def activate_window(self):
         """
-        将微信窗口置前激活
-        SendKeys 必须发到前台窗口才能生效，所以必须 SetActive
+        将微信窗口置前激活。
+        首次搜索成功后缓存窗口句柄，后续调用直接用 Win32 API 激活（秒级）。
         """
         if not UIA_AVAILABLE:
             self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
             return False
 
+        # 已有缓存窗口，直接用 Win32 API 激活
+        if self.wechat_window is not None:
+            try:
+                hwnd = self.wechat_window.NativeWindowHandle
+                if hwnd and ctypes.windll.user32.IsWindow(hwnd):
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    ctypes.windll.user32.BringWindowToTop(hwnd)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.3)
+                    return True
+            except Exception:
+                pass
+            # 窗口已失效，清空缓存重新搜索
+            self.wechat_window = None
+
         try:
             window = None
+            self._emit_log("正在定位微信窗口...")
 
             for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
                 try:
                     w = auto.WindowControl(searchDepth=1, ClassName=class_name)
-                    if w.Exists(maxSearchSeconds=1):
+                    if w.Exists(maxSearchSeconds=0.5):
                         window = w
                         logger.debug(f"通过类名找到微信窗口: {class_name}")
                         break
@@ -599,27 +615,24 @@ class WeChatController:
             if window is None:
                 try:
                     w = auto.WindowControl(searchDepth=1, Name="微信")
-                    if w.Exists(maxSearchSeconds=1):
+                    if w.Exists(maxSearchSeconds=0.5):
                         window = w
                         logger.debug("通过标题找到微信窗口")
                 except Exception:
                     pass
 
             if window is None:
-                self._emit_log("找不到微信主窗口", "error")
+                self._emit_log("找不到微信主窗口（类名可能已变化）", "error")
                 return False
 
             # 用 Win32 API 强制激活微信窗口为前台窗口
             hwnd = window.NativeWindowHandle
             if hwnd:
-                # 先恢复窗口（如果最小化了）
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                # BringWindowToTop + SetForegroundWindow 组合确保前台
                 ctypes.windll.user32.BringWindowToTop(hwnd)
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
                 self._sleep(0.3)
             else:
-                # 回退到 uiautomation 的 SetActive
                 window.SetActive()
                 self._sleep(0.3)
 

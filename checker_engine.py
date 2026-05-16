@@ -172,7 +172,9 @@ class CheckerEngine:
         # 初始化 COM（uiautomation 依赖，子线程必须手动初始化）
         try:
             import ctypes
-            ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+            hr = ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+            if hr < 0:
+                self._emit_log(f"COM 初始化失败: 0x{hr & 0xFFFFFFFF:08X}", "error")
         except Exception:
             pass
 
@@ -247,11 +249,14 @@ class CheckerEngine:
                                 f"[错误] {wechat_id}: {detail}", "error"
                             )
 
-                        # 账号间等待（随机间隔）
+                        # 账号间等待（随机间隔）。操作出错时跳过，直接查下一个
                         if acc_idx < len(batch) - 1 and not self._stop_event.is_set():
-                            wait_time = random.uniform(ai_min, ai_max)
-                            self._emit_log(f"等待 {wait_time:.1f} 秒后检查下一个...")
-                            self._wait_with_stop(wait_time)
+                            if status == "error":
+                                self._emit_log("操作出错，跳过等待直接检查下一个...")
+                            else:
+                                wait_time = random.uniform(ai_min, ai_max)
+                                self._emit_log(f"等待 {wait_time:.1f} 秒后检查下一个...")
+                                self._wait_with_stop(wait_time)
 
                     total_checked += len(batch)
 
