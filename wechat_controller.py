@@ -617,11 +617,11 @@ class WeChatController:
                 # BringWindowToTop + SetForegroundWindow 组合确保前台
                 ctypes.windll.user32.BringWindowToTop(hwnd)
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
-                time.sleep(0.3)
+                self._sleep(0.3)
             else:
                 # 回退到 uiautomation 的 SetActive
                 window.SetActive()
-                time.sleep(0.3)
+                self._sleep(0.3)
 
             self.wechat_window = window
             logger.debug("微信窗口已激活为前台窗口")
