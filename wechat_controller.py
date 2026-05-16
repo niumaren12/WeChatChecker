@@ -274,9 +274,11 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
         logger.warning(f"Tesseract OCR 失败: {e}")
         return []
 
-    matches = []
-    n = len(data["text"])
     scale = 0.5  # 坐标缩放（图片放大了2倍）
+    n = len(data["text"])
+
+    # ---- 第1步：逐条目精确匹配 ----
+    matches = []
     for i in range(n):
         text = data["text"][i].strip()
         conf = data["conf"][i]
@@ -288,6 +290,93 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             cx = region_left + x + w // 2
             cy = region_top + y + h // 2
             matches.append((cx, cy, text))
+    if matches:
+        return matches
+
+    # ---- 第2步：同行拼接回退（微信CEF字符间距导致单字被拆分）----
+    # 收集所有有效条目（坐标+文本）
+    entries = []
+    for i in range(n):
+        text = data["text"][i].strip()
+        conf = data["conf"][i]
+        if text and conf > 10:
+            x = int(data["left"][i] * scale)
+            y = int(data["top"][i] * scale)
+            w = int(data["width"][i] * scale)
+            h = int(data["height"][i] * scale)
+            entries.append({"text": text, "x": x, "y": y, "w": w, "h": h})
+
+    if not entries:
+        return []
+
+    # 按 Y 坐标分组（容差 10px 内视为同一行）
+    entries.sort(key=lambda e: e["y"])
+    rows = []
+    current_row = [entries[0]]
+    for e in entries[1:]:
+        if abs(e["y"] - current_row[-1]["y"]) <= 10:
+            current_row.append(e)
+        else:
+            rows.append(current_row)
+            current_row = [e]
+    rows.append(current_row)
+
+    # 每行按 X 排序，拼接文本后搜索
+    for row in rows:
+        row.sort(key=lambda e: e["x"])
+        merged = "".join(e["text"] for e in row)
+        idx = merged.find(target_text)
+        if idx == -1:
+            continue
+
+        # 定位目标文字对应的条目区间
+        pos = 0
+        first_entry = None
+        last_entry = None
+        for e in row:
+            e_start = pos
+            e_end = pos + len(e["text"])
+            if e_start < idx + len(target_text) and e_end > idx:
+                if first_entry is None:
+                    first_entry = e
+                last_entry = e
+            pos = e_end
+
+        if first_entry and last_entry:
+            # 用第一个和最后一个匹配条目的中心点
+            cx = region_left + (first_entry["x"] + last_entry["x"] + last_entry["w"]) // 2
+            cy = region_top + (first_entry["y"] + first_entry["h"] // 2)
+            matches.append((cx, cy, target_text))
+            if glog:
+                glog(f"同行拼接匹配: '{target_text}' 在 '{merged[:30]}' 中")
+            return matches
+
+    # ---- 第3步：全文字拼接兜底（跨行情况）----
+    all_entries = []
+    for row in rows:
+        all_entries.extend(row)
+    all_entries.sort(key=lambda e: (e["y"], e["x"]))
+    full_text = "".join(e["text"] for e in all_entries)
+    idx = full_text.find(target_text)
+    if idx != -1:
+        pos = 0
+        first_entry = None
+        last_entry = None
+        for e in all_entries:
+            e_start = pos
+            e_end = pos + len(e["text"])
+            if e_start < idx + len(target_text) and e_end > idx:
+                if first_entry is None:
+                    first_entry = e
+                last_entry = e
+            pos = e_end
+        if first_entry and last_entry:
+            cx = region_left + (first_entry["x"] + last_entry["x"] + last_entry["w"]) // 2
+            cy = region_top + (first_entry["y"] + first_entry["h"] // 2)
+            matches.append((cx, cy, target_text))
+            if glog:
+                glog(f"全文拼接匹配: '{target_text}'")
+
     return matches
 
 
