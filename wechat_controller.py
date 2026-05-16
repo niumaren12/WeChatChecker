@@ -7,6 +7,8 @@ import time
 import random
 import subprocess
 import os
+import threading
+from contextlib import contextmanager
 
 from logger_setup import logger
 
@@ -162,7 +164,7 @@ class _INPUT(ctypes.Structure):
 
 
 def _type_text(text):
-    """用 SendInput 逐字符输入 Unicode 文本，不依赖剪贴板"""
+    """用 SendInput 逐字符输入 Unicode 文本，不依赖剪贴板。部分失败时抛 OSError"""
     KEYEVENTF_UNICODE = 0x0004
     KEYEVENTF_KEYUP = 0x0002
     INPUT_KEYBOARD = 1
@@ -193,7 +195,7 @@ def _type_text(text):
     arr = (_INPUT * count)(*inputs)
     sent = ctypes.windll.user32.SendInput(count, arr, ctypes.sizeof(_INPUT))
     if sent < count:
-        logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
+        raise OSError(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
 # ---------- Tesseract 路径 ----------
@@ -207,7 +209,7 @@ def _get_tesseract_path():
     if _tesseract_path:
         return _tesseract_path
 
-    import os, sys
+    import sys
 
     # PyInstaller 打包后，tesseract 在临时解压目录
     if getattr(sys, 'frozen', False):
@@ -223,6 +225,31 @@ def _get_tesseract_path():
 
 
 # ---------- OCR 辅助函数 ----------
+
+# 保护 subprocess.Popen 补丁的锁，防止并发 OCR 调用时嵌套覆盖
+_tesseract_lock = threading.Lock()
+
+
+@contextmanager
+def _no_console_popen():
+    """上下文管理器：临时禁用 subprocess.Popen 的控制台窗口，防止抢焦点"""
+    import sys
+    if sys.platform != "win32":
+        yield
+        return
+
+    with _tesseract_lock:
+        original = subprocess.Popen
+        def _no_window_popen(*args, **kwargs):
+            kwargs.setdefault("creationflags", 0)
+            kwargs["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
+            return original(*args, **kwargs)
+        subprocess.Popen = _no_window_popen
+        try:
+            yield
+        finally:
+            subprocess.Popen = original
+
 
 def _preprocess_for_ocr(image):
     """图像预处理：放大2倍 + 灰度 + 二值化，提升Tesseract识别率"""
@@ -256,31 +283,19 @@ def _screenshot_region(left, top, right, bottom):
         return Image.frombytes("RGB", (width, height), sct_img.bgra, "raw", "BGRX")
 
 
-def _silence_tesseract_console():
-    """禁止 tesseract.exe 弹出控制台窗口（会抢焦点导致微信下拉菜单关闭）"""
-    import sys
-    if sys.platform != "win32":
-        return lambda: None  # 非 Windows 无需操作
-    import subprocess
-    _original = subprocess.Popen
-    def _no_window_popen(*args, **kwargs):
-        kwargs.setdefault("creationflags", 0)
-        kwargs["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
-        return _original(*args, **kwargs)
-    subprocess.Popen = _no_window_popen
-    return lambda: setattr(subprocess, "Popen", _original)
+def _ocr_get_text_entries(image):
+    """OCR识别图片，返回 (条目列表, 分行列表, 全文拼接)。
 
-
-def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
-    """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
+    条目列表: [{"text", "x", "y", "w", "h", "conf"}, ...]
+    分行列表: 按Y坐标分组后的行列表，每行按X排序
+    全文拼接: 所有条目按坐标排序后拼接的完整文本
+    """
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-    _restore = _silence_tesseract_console()
-    try:
-        # 预处理图像提高识别率
-        processed = _preprocess_for_ocr(image)
 
+    with _no_console_popen():
+        processed = _preprocess_for_ocr(image)
         try:
             data = pytesseract.image_to_data(
                 processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
@@ -288,29 +303,12 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             )
         except Exception as e:
             logger.warning(f"Tesseract OCR 失败: {e}")
-            return []
+            return [], [], ""
 
     scale = 0.5  # 坐标缩放（图片放大了2倍）
     n = len(data["text"])
 
-    # ---- 第1步：逐条目精确匹配 ----
-    matches = []
-    for i in range(n):
-        text = data["text"][i].strip()
-        conf = data["conf"][i]
-        if target_text in text and conf > 15:
-            x = int(data["left"][i] * scale)
-            y = int(data["top"][i] * scale)
-            w = int(data["width"][i] * scale)
-            h = int(data["height"][i] * scale)
-            cx = region_left + x + w // 2
-            cy = region_top + y + h // 2
-            matches.append((cx, cy, text))
-    if matches:
-        return matches
-
-    # ---- 第2步：同行拼接回退（微信CEF字符间距导致单字被拆分）----
-    # 收集所有有效条目（坐标+文本）
+    # 收集有效条目
     entries = []
     for i in range(n):
         text = data["text"][i].strip()
@@ -320,10 +318,10 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             y = int(data["top"][i] * scale)
             w = int(data["width"][i] * scale)
             h = int(data["height"][i] * scale)
-            entries.append({"text": text, "x": x, "y": y, "w": w, "h": h})
+            entries.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
 
     if not entries:
-        return []
+        return [], [], ""
 
     # 按 Y 坐标分组（容差 10px 内视为同一行）
     entries.sort(key=lambda e: e["y"])
@@ -337,7 +335,32 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             current_row = [e]
     rows.append(current_row)
 
-    # 每行按 X 排序，拼接文本后搜索
+    # 全文拼接：所有条目按坐标排序
+    all_entries = []
+    for row in rows:
+        all_entries.extend(row)
+    all_entries.sort(key=lambda e: (e["y"], e["x"]))
+    full_text = "".join(e["text"] for e in all_entries)
+
+    return entries, rows, full_text
+
+
+def _find_text_in_entries(entries, rows, target_text):
+    """在OCR条目中定位目标文字，返回匹配条目的起止信息。
+
+    返回 (first_entry, last_entry) 或 (None, None)。
+
+    三级匹配策略：
+    1. 逐条目精确匹配 (conf > 15)
+    2. 同行拼接回退（CEF字符间距导致单字被拆分）
+    3. 全文拼接兜底
+    """
+    # ---- 第1步：逐条目精确匹配 ----
+    for e in entries:
+        if target_text in e["text"] and e["conf"] > 15:
+            return e, e
+
+    # ---- 第2步：同行拼接回退 ----
     for row in rows:
         row.sort(key=lambda e: e["x"])
         merged = "".join(e["text"] for e in row)
@@ -345,7 +368,6 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
         if idx == -1:
             continue
 
-        # 定位目标文字对应的条目区间
         pos = 0
         first_entry = None
         last_entry = None
@@ -359,15 +381,9 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             pos = e_end
 
         if first_entry and last_entry:
-            # 用第一个和最后一个匹配条目的中心点
-            cx = region_left + (first_entry["x"] + last_entry["x"] + last_entry["w"]) // 2
-            cy = region_top + (first_entry["y"] + first_entry["h"] // 2)
-            matches.append((cx, cy, target_text))
-            if glog:
-                glog(f"同行拼接匹配: '{target_text}' 在 '{merged[:30]}' 中")
-            return matches
+            return first_entry, last_entry
 
-    # ---- 第3步：全文字拼接兜底（跨行情况）----
+    # ---- 第3步：全文拼接兜底 ----
     all_entries = []
     for row in rows:
         all_entries.extend(row)
@@ -387,103 +403,76 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
                 last_entry = e
             pos = e_end
         if first_entry and last_entry:
-            cx = region_left + (first_entry["x"] + last_entry["x"] + last_entry["w"]) // 2
-            cy = region_top + (first_entry["y"] + first_entry["h"] // 2)
-            matches.append((cx, cy, target_text))
-            if glog:
-                glog(f"全文拼接匹配: '{target_text}'")
+            return first_entry, last_entry
 
-    finally:
-        _restore()
-    return matches
+    return None, None
+
+
+def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
+    """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
+    entries, rows, _full_text = _ocr_get_text_entries(image)
+
+    if not entries:
+        return []
+
+    first, last = _find_text_in_entries(entries, rows, target_text)
+    if first and last:
+        cx = region_left + (first["x"] + last["x"] + last["w"]) // 2
+        cy = region_top + (first["y"] + first["h"] // 2)
+        if glog:
+            for row in rows:
+                merged = "".join(e["text"] for e in row)
+                if target_text in merged:
+                    glog(f"同行拼接匹配: '{target_text}' 在 '{merged[:30]}' 中")
+                    break
+            else:
+                glog(f"全文拼接匹配: '{target_text}'")
+        return [(cx, cy, target_text)]
+
+    return []
 
 
 def _ocr_contains_text(image, target_text, glog=None):
     """OCR 识别图片，检查是否包含目标文字（支持CEF字符间距拆分）"""
-    import pytesseract
+    entries, rows, _full_text = _ocr_get_text_entries(image)
 
-    pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-    _restore = _silence_tesseract_console()
-    try:
-        processed = _preprocess_for_ocr(image)
+    if not entries:
+        return False
 
-        try:
-            data = pytesseract.image_to_data(
-                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
-                config="--psm 6"
-            )
-        except Exception as e:
-            logger.warning(f"Tesseract OCR 失败: {e}")
-            return False
+    first, last = _find_text_in_entries(entries, rows, target_text)
+    if first and last:
+        return True
 
-        # ---- 第1步：逐条目精确匹配 ----
-        n = len(data["text"])
-        for i in range(n):
-            text = data["text"][i].strip()
-            if target_text in text:
-                return True
+    # 未找到时输出诊断信息
+    if glog:
+        all_entries = []
+        for row in rows:
+            all_entries.extend(row)
+        glog(f"OCR未找到'{target_text}'，识别到的文字({len(all_entries)}条): "
+             f"{' | '.join(e['text'] for e in all_entries[:20])}")
 
-        # ---- 第2步：同行拼接回退（CEF字符间距导致单字拆分）----
-        scale = 0.5
-        entries = []
-        for i in range(n):
-            text = data["text"][i].strip()
-            conf = data["conf"][i]
-            if text and conf > 10:
-                x = int(data["left"][i] * scale)
-                y = int(data["top"][i] * scale)
-                entries.append({"text": text, "y": y, "x": x})
-
-        if entries:
-            # 按 Y 分组（容差 10px）
-            entries.sort(key=lambda e: e["y"])
-            rows = []
-            current_row = [entries[0]]
-            for e in entries[1:]:
-                if abs(e["y"] - current_row[-1]["y"]) <= 10:
-                    current_row.append(e)
-                else:
-                    rows.append(current_row)
-                    current_row = [e]
-            rows.append(current_row)
-
-            # 每行按 X 排序后拼接检查
-            for row in rows:
-                row.sort(key=lambda e: e["x"])
-                merged = "".join(e["text"] for e in row)
-                if target_text in merged:
-                    return True
-
-            # 全文拼接兜底
-            all_entries = []
-            for row in rows:
-                all_entries.extend(row)
-            all_entries.sort(key=lambda e: (e["y"], e["x"]))
-            full_text = "".join(e["text"] for e in all_entries)
-            if target_text in full_text:
-                return True
-
-        # 未找到时输出诊断信息
-        if glog:
-            all_texts = [t.strip() for t in data["text"] if t.strip()]
-            glog(f"OCR未找到'{target_text}'，识别到的文字({len(all_texts)}条): "
-                 f"{' | '.join(all_texts[:20])}")
-
-    finally:
-        _restore()
     return False
 
 
 def _mouse_click(hwnd, x, y):
-    """向指定窗口发送后台鼠标点击（屏幕绝对坐标），不移动用户光标"""
-    # 屏幕坐标 → 窗口客户区坐标
+    """向指定窗口发送后台鼠标点击（屏幕绝对坐标），不移动用户光标。
+
+    使用 SendMessageTimeoutW：同步等待目标窗口处理，带 2 秒超时避免死锁。
+    """
     pt = ctypes.wintypes.POINT(int(x), int(y))
     ctypes.windll.user32.ScreenToClient(hwnd, ctypes.byref(pt))
     lparam = (pt.y << 16) | (pt.x & 0xFFFF)
 
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0201, 0x0001, lparam)  # WM_LBUTTONDOWN
-    time.sleep(0.03)
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, lparam)       # WM_LBUTTONUP
+    result = ctypes.c_ulong()
+    # WM_LBUTTONDOWN
+    ctypes.windll.user32.SendMessageTimeoutW(
+        hwnd, 0x0201, 0x0001, lparam, 0x0000, 2000, ctypes.byref(result)
+    )
+    time.sleep(0.05)
+    # WM_LBUTTONUP
+    ctypes.windll.user32.SendMessageTimeoutW(
+        hwnd, 0x0202, 0, lparam, 0x0000, 2000, ctypes.byref(result)
+    )
     time.sleep(0.05)
 
 
@@ -495,18 +484,22 @@ class WeChatController:
     # 微信主窗口标题可能包含的文字
     WECHAT_WINDOW_TITLE = "微信"
 
-    # 弹窗中除昵称外可能出现的固定标签文字（用于昵称兜底检测时排除）
-    NICKNAME_EXCLUDE = frozenset([
-        "添加朋友", "微信号", "标签", "来源", "地区",
-        "个性签名", "添加到通讯录", "发消息", "音视频通话",
-        "微信", "WeChat", "昵称",
-    ])
-
     def __init__(self, wechat_path):
         self.wechat_path = wechat_path
         self.wechat_window = None
         self.main_control = None
         self._gui_log = None  # GUI 日志回调，由引擎注入
+
+    def _emit_log(self, msg, level="info"):
+        """同时写 logger 和 GUI 回调（取代各处重复的 _glog 闭包）"""
+        if level == "info":
+            logger.info(msg)
+        elif level == "warn":
+            logger.warning(msg)
+        elif level == "error":
+            logger.error(msg)
+        if self._gui_log:
+            self._gui_log(msg)
 
     # ==================== 窗口管理 ====================
 
@@ -574,7 +567,7 @@ class WeChatController:
         SendKeys 必须发到前台窗口才能生效，所以必须 SetActive
         """
         if not UIA_AVAILABLE:
-            logger.error("uiautomation 不可用，无法操作微信窗口")
+            self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
             return False
 
         try:
@@ -600,7 +593,7 @@ class WeChatController:
                     pass
 
             if window is None:
-                logger.error("找不到微信主窗口")
+                self._emit_log("找不到微信主窗口", "error")
                 return False
 
             # 用 Win32 API 强制激活微信窗口为前台窗口
@@ -622,7 +615,7 @@ class WeChatController:
             return True
 
         except Exception as e:
-            logger.error(f"激活微信窗口失败: {e}")
+            self._emit_log(f"激活微信窗口失败: {e}", "error")
             return False
 
     # ==================== 搜索操作 ====================
@@ -633,7 +626,7 @@ class WeChatController:
         用 Win32 keybd_event，不依赖 uiautomation COM 线程
         """
         if not UIA_AVAILABLE:
-            logger.error("uiautomation 不可用")
+            self._emit_log("uiautomation 不可用", "error")
             return False
 
         try:
@@ -642,7 +635,7 @@ class WeChatController:
             logger.debug("已按下 Ctrl+F 激活搜索框")
             return True
         except Exception as e:
-            logger.error(f"激活搜索框失败: {e}")
+            self._emit_log(f"激活搜索框失败: {e}", "error")
             return False
 
     def input_wechat_id(self, wechat_id):
@@ -653,58 +646,47 @@ class WeChatController:
         if not UIA_AVAILABLE:
             return False
 
-        try:
-            # 清空搜索框已有内容
-            _send_hotkey(_VK["ctrl"], _VK["a"])
-            time.sleep(0.2)
-            _press_key(_VK["delete"])
-            time.sleep(0.2)
+        # 清空搜索框已有内容
+        _send_hotkey(_VK["ctrl"], _VK["a"])
+        time.sleep(0.2)
+        _press_key(_VK["delete"])
+        time.sleep(0.2)
 
-            # 方法A: SendInput 逐字符输入
+        # 方法A: SendInput 逐字符输入
+        try:
             _type_text(wechat_id)
             time.sleep(0.3)
             logger.debug(f"已通过 SendInput 输入微信号: {wechat_id}")
             return True
-
         except Exception as e:
             logger.debug(f"SendInput 失败: {e}，回退到剪贴板")
 
-            # 方法B: base64 + PowerShell 剪贴板（安全，无注入风险）
-            try:
-                import base64
-                encoded = base64.b64encode(wechat_id.encode('utf-16-le')).decode('ascii')
-                ps_cmd = (
-                    f'$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("{encoded}"));'
-                    f'[Windows.Clipboard]::SetText($s)'
-                )
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_cmd],
-                    capture_output=True, timeout=10
-                )
-                time.sleep(0.2)
-                _send_hotkey(_VK["ctrl"], _VK["v"])
-                time.sleep(0.3)
-                logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
-                return True
-            except Exception as e2:
-                logger.error(f"所有输入方式均失败: SendInput={e}, 剪贴板={e2}")
-                return False
+        # 方法B: base64 + PowerShell 剪贴板（安全，无注入风险）
+        try:
+            import base64
+            encoded = base64.b64encode(wechat_id.encode('utf-16-le')).decode('ascii')
+            ps_cmd = (
+                f'$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("{encoded}"));'
+                f'[Windows.Clipboard]::SetText($s)'
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, timeout=10
+            )
+            time.sleep(0.2)
+            _send_hotkey(_VK["ctrl"], _VK["v"])
+            time.sleep(0.3)
+            logger.debug(f"已通过剪贴板粘贴微信号: {wechat_id}")
+            return True
+        except Exception as e2:
+            self._emit_log(f"所有输入方式均失败: SendInput={e}, 剪贴板={e2}", "error")
+            return False
 
     def click_dropdown_item(self):
         """
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
         截图搜索框下方区域 → Tesseract 识别 → 鼠标点击文字中心
         """
-        def _glog(msg, level="info"):
-            if level == "info":
-                logger.info(msg)
-            elif level == "warn":
-                logger.warning(msg)
-            elif level == "error":
-                logger.error(msg)
-            if self._gui_log:
-                self._gui_log(msg)
-
         time.sleep(1.5)
 
         hwnd = None
@@ -716,31 +698,31 @@ class WeChatController:
                     r = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
                     rect = (r.left, r.top, r.right, r.bottom)
-                    _glog(f"微信窗口位置: left={r.left} top={r.top} "
-                          f"right={r.right} bottom={r.bottom} "
-                          f"({r.right-r.left}x{r.bottom-r.top})")
+                    self._emit_log(f"微信窗口位置: left={r.left} top={r.top} "
+                                   f"right={r.right} bottom={r.bottom} "
+                                   f"({r.right-r.left}x{r.bottom-r.top})")
             except Exception as e:
-                _glog(f"获取窗口位置异常: {e}", "error")
+                self._emit_log(f"获取窗口位置异常: {e}", "error")
 
         if rect is None:
-            _glog("无法获取微信窗口位置，无法截图下拉菜单", "error")
+            self._emit_log("无法获取微信窗口位置，无法截图下拉菜单", "error")
             return False
 
         win_left, win_top, win_right, win_bottom = rect
         region = (win_left, win_top + 40, win_left + 400, win_top + 380)
-        _glog(f"截取下拉区域1: {region}")
+        self._emit_log(f"截取下拉区域1: {region}")
 
         img = _screenshot_region(*region)
         if img is None:
-            _glog("截图下拉菜单失败", "error")
+            self._emit_log("截图下拉菜单失败", "error")
             return False
 
-        _glog(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
+        self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
-        matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=_glog)
+        matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=self._emit_log)
         if matches:
             cx, cy, text = matches[0]
-            _glog(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
+            self._emit_log(f"OCR 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
             if hwnd:
                 try:
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -751,16 +733,16 @@ class WeChatController:
             time.sleep(2.0)
             return True
 
-        _glog(f"第一区域未找到'网络查找'，扩大范围再试...")
+        self._emit_log(f"第一区域未找到'网络查找'，扩大范围再试...")
 
         region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
-        _glog(f"扩大截取区域2: {region2}")
+        self._emit_log(f"扩大截取区域2: {region2}")
         img2 = _screenshot_region(*region2)
         if img2 is not None:
-            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1], glog=_glog)
+            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1], glog=self._emit_log)
             if matches2:
                 cx, cy, text = matches2[0]
-                _glog(f"OCR(扩区) 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
+                self._emit_log(f"OCR(扩区) 找到下拉项: '{text}' → 后台点击 ({cx}, {cy})")
                 if hwnd:
                     try:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -771,21 +753,18 @@ class WeChatController:
                 time.sleep(2.0)
                 return True
 
+        # 诊断输出：列出识别到的文字
         try:
-            import pytesseract
-            pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-            processed = _preprocess_for_ocr(img)
-            data = pytesseract.image_to_data(
-                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
-                config="--psm 6"
-            )
-            texts = [t.strip() for t in data["text"] if t.strip()]
-            all_text = " | ".join(texts[:15])
-            _glog(f"OCR识别到的全部文字({len(texts)}条): {all_text}", "warn")
+            entries, rows, full_text = _ocr_get_text_entries(img)
+            all_entries = []
+            for row in rows:
+                all_entries.extend(row)
+            all_text = " | ".join(e["text"] for e in all_entries[:15])
+            self._emit_log(f"OCR识别到的全部文字({len(all_entries)}条): {all_text}", "warn")
         except Exception as e2:
-            _glog(f"OCR调试输出异常: {e2}", "error")
+            self._emit_log(f"OCR调试输出异常: {e2}", "error")
 
-        _glog("OCR 未找到下拉菜单中的'网络查找'项", "error")
+        self._emit_log("OCR 未找到下拉菜单中的'网络查找'项", "error")
         return False
 
     # ==================== 弹窗检测 ====================
@@ -810,12 +789,6 @@ class WeChatController:
             # 查找弹窗 — 三级搜索
             popup = None
 
-            def _glog(msg):
-                """同时写 logger 和 GUI 回调"""
-                logger.info(msg)
-                if self._gui_log:
-                    self._gui_log(msg)
-
             # 第1级：搜索较深层的独立窗口（searchDepth=3）
             popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
             for title in popup_titles:
@@ -823,7 +796,7 @@ class WeChatController:
                     w = auto.WindowControl(Name=title, searchDepth=3)
                     if w.Exists(maxSearchSeconds=0.8):
                         popup = w
-                        _glog(f"找到弹窗(深层窗口): {title}")
+                        self._emit_log(f"找到弹窗(深层窗口): {title}")
                         break
                 except Exception:
                     continue
@@ -835,30 +808,30 @@ class WeChatController:
                         pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
                         if pane.Exists(maxSearchSeconds=0.8):
                             popup = pane
-                            _glog(f"找到弹窗(主窗口内面板): {title}")
+                            self._emit_log(f"找到弹窗(主窗口内面板): {title}")
                             break
                     except Exception:
                         continue
 
             # 第3级：兜底用微信主窗口本身作为搜索范围
             if popup is None:
-                _glog("未找到独立弹窗，使用微信主窗口作为搜索范围")
+                self._emit_log("未找到独立弹窗，使用微信主窗口作为搜索范围")
                 popup = self.wechat_window if self.wechat_window else auto.GetRootControl()
 
             if popup is None:
                 # 诊断：列出桌面所有顶层窗口
                 try:
                     all_top = auto.GetRootControl().GetChildren()
-                    _glog(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
+                    self._emit_log(f"未找到弹窗，桌面共 {len(all_top)} 个顶层窗口:")
                     for w in all_top[:15]:
                         try:
-                            _glog(f"  [{w.ClassName}] Name='{w.Name}' "
-                                  f"Rect={w.BoundingRectangle}")
+                            self._emit_log(f"  [{w.ClassName}] Name='{w.Name}' "
+                                           f"Rect={w.BoundingRectangle}")
                         except Exception:
                             pass
                 except Exception:
                     pass
-                _glog("未找到任何弹窗或微信窗口")
+                self._emit_log("未找到任何弹窗或微信窗口")
                 return ("not_found", "")
 
             # 不激活弹窗，避免抢前台
@@ -873,17 +846,17 @@ class WeChatController:
                     rect = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(popup_hwnd, ctypes.byref(rect))
                     popup_rect = (rect.left, rect.top, rect.right, rect.bottom)
-                    _glog(f"弹窗位置(Win32): left={popup_rect[0]} top={popup_rect[1]} "
-                          f"right={popup_rect[2]} bottom={popup_rect[3]}")
+                    self._emit_log(f"弹窗位置(Win32): left={popup_rect[0]} top={popup_rect[1]} "
+                                   f"right={popup_rect[2]} bottom={popup_rect[3]}")
             except Exception:
                 pass
 
             if popup_rect is None:
                 try:
                     popup_rect = popup.BoundingRectangle
-                    _glog(f"弹窗位置(UIA): {popup_rect}")
+                    self._emit_log(f"弹窗位置(UIA): {popup_rect}")
                 except Exception as e:
-                    _glog(f"无法获取弹窗位置: {e}")
+                    self._emit_log(f"无法获取弹窗位置: {e}")
 
             # OCR 识别弹窗区域，检查是否包含"添加到通讯录"
             has_add_button = False
@@ -891,18 +864,18 @@ class WeChatController:
                 try:
                     img = _screenshot_region(*popup_rect)
                     if img is not None:
-                        has_add_button = _ocr_contains_text(img, "添加到通讯录", glog=_glog)
-                        _glog(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
-                              f"→ {'找到' if has_add_button else '未找到'}'添加到通讯录'")
+                        has_add_button = _ocr_contains_text(img, "添加到通讯录", glog=self._emit_log)
+                        self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
+                                       f"→ {'找到' if has_add_button else '未找到'}'添加到通讯录'")
                 except Exception as e:
-                    _glog(f"OCR弹窗检测异常: {e}")
+                    self._emit_log(f"OCR弹窗检测异常: {e}")
 
             # 判断逻辑
             if has_add_button:
-                _glog("弹窗: 有'添加到通讯录' → 正常")
+                self._emit_log("弹窗: 有'添加到通讯录' → 正常")
                 return ("normal", "(已识别按钮)")
             elif popup_rect:
-                _glog("弹窗: 已打开但无'添加到通讯录' → 可能异常")
+                self._emit_log("弹窗: 已打开但无'添加到通讯录' → 可能异常")
                 return ("abnormal", "按钮无文字")
             else:
                 return ("abnormal", "弹窗未打开")

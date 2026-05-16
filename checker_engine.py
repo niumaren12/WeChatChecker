@@ -5,7 +5,6 @@
 import threading
 import time
 import random
-import queue
 
 from logger_setup import logger
 from config_manager import ConfigManager
@@ -19,11 +18,6 @@ class CheckerEngine:
     状态流转:
         idle -> running -> (异常停止 / 用户停止) -> idle
     """
-
-    # 信号常量
-    SIG_STOP = "stop"
-    SIG_PAUSE = "pause"
-    SIG_RESUME = "resume"
 
     def __init__(self, config_mgr: ConfigManager):
         self.config = config_mgr
@@ -68,6 +62,17 @@ class CheckerEngine:
         if self.on_progress:
             self.on_progress(current, total, batch_info)
 
+    def _build_config_snapshot(self):
+        """快照所有配置参数，避免子线程读取时被主线程并发修改"""
+        return {
+            "batch_size": self.config.get("batch_size", 9),
+            "batch_interval_min": self.config.get("batch_interval_min", 30),
+            "batch_interval_max": self.config.get("batch_interval_max", 50),
+            "account_interval_min": self.config.get("account_interval_min", 3),
+            "account_interval_max": self.config.get("account_interval_max", 5),
+            "max_rounds": self.config.get("max_rounds", 100),
+        }
+
     def stop(self):
         """请求停止检查"""
         self._stop_event.set()
@@ -99,15 +104,7 @@ class CheckerEngine:
         self.total_accounts = len(ids)
         self.checked_accounts = []
 
-        # 一次性快照配置，避免子线程读取时被主线程并发修改
-        config_snapshot = {
-            "batch_size": self.config.get("batch_size", 9),
-            "batch_interval_min": self.config.get("batch_interval_min", 30),
-            "batch_interval_max": self.config.get("batch_interval_max", 50),
-            "account_interval_min": self.config.get("account_interval_min", 3),
-            "account_interval_max": self.config.get("account_interval_max", 5),
-            "max_rounds": self.config.get("max_rounds", 100),
-        }
+        config_snapshot = self._build_config_snapshot()
 
         # 在子线程中运行检查
         thread = threading.Thread(
@@ -138,14 +135,7 @@ class CheckerEngine:
         self.total_accounts = len(ids_list)
         self.checked_accounts = []
 
-        config_snapshot = {
-            "batch_size": self.config.get("batch_size", 9),
-            "batch_interval_min": self.config.get("batch_interval_min", 30),
-            "batch_interval_max": self.config.get("batch_interval_max", 50),
-            "account_interval_min": self.config.get("account_interval_min", 3),
-            "account_interval_max": self.config.get("account_interval_max", 5),
-            "max_rounds": self.config.get("max_rounds", 100),
-        }
+        config_snapshot = self._build_config_snapshot()
 
         thread = threading.Thread(
             target=self._run_check_loop,
