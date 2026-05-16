@@ -589,26 +589,32 @@ class WeChatController:
             return ("not_found", "")
 
     def close_popup(self):
-        """关闭弹窗 - 优先找关闭按钮，兜底 ESC"""
+        """关闭弹窗 - 找到弹窗 → 激活 → ESC"""
         if not UIA_AVAILABLE:
             return
         try:
-            # 优先找关闭按钮
-            try:
-                close_btn = auto.ButtonControl(Name="关闭", searchDepth=5)
-                if close_btn.Exists(maxSearchSeconds=0.3):
-                    try:
-                        pattern = close_btn.GetInvokePattern()
-                        pattern.Invoke()
-                        time.sleep(0.5)
-                        logger.debug("通过关闭按钮关闭弹窗")
-                        return
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            # 找到弹窗窗口
+            popup = None
+            for title in ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]:
+                try:
+                    w = auto.WindowControl(Name=title, searchDepth=3)
+                    if w.Exists(maxSearchSeconds=0.5):
+                        popup = w
+                        break
+                except Exception:
+                    continue
 
-            # 兜底：ESC
+            # 激活弹窗使其能接收 ESC 按键
+            if popup:
+                try:
+                    hwnd = popup.NativeWindowHandle
+                    if hwnd:
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+
+            # 发送 ESC 关闭弹窗
             _press_key(_VK["escape"])
             time.sleep(0.5)
             logger.debug("已关闭弹窗(ESC)")
