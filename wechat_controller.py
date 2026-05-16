@@ -198,64 +198,101 @@ def _type_text(text):
 
 # ---------- OCR 语言包自动安装 ----------
 
-_ocr_lang_installed = False  # 是否已尝试安装过中文OCR语言包
+_ocr_lang_installed = False  # 是否已成功安装OCR语言包
 
 
-def _ensure_chinese_ocr():
-    """检查并自动安装 Windows OCR 语言包（en-US + zh-CN，静默不弹UAC）"""
+def _ensure_chinese_ocr(glog=None):
+    """检查并自动安装 Windows OCR 语言包（en-US + zh-CN）
+    glog: 可选回调(msg) 用于推送GUI消息
+    先静默安装，失败则通过glog提示用户后弹UAC提权安装"""
     global _ocr_lang_installed
     if _ocr_lang_installed:
         return True
 
     import subprocess
 
-    # winocr 默认用 en-US，同时需要 zh-CN 识别中文
-    # 先检查，缺哪个装哪个
     needed = [
         ("Language.OCR~~~en-US~0.0.1.0", "英文OCR"),
         ("Language.OCR~~~zh-CN~0.0.1.0", "中文OCR"),
     ]
 
-    all_ok = True
-    for pkg_name, desc in needed:
-        # 检查是否已安装
+    def _check_installed(pkg_name):
         try:
-            check = subprocess.run(
+            r = subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
                  f"(Get-WindowsCapability -Online -Name '{pkg_name}').State"],
                 capture_output=True, text=True, timeout=30
             )
-            if check.returncode == 0 and "Installed" in check.stdout:
-                logger.info(f"{desc}语言包已安装")
-                continue
+            return r.returncode == 0 and "Installed" in r.stdout
         except Exception:
-            pass
+            return False
 
-        logger.info(f"{desc}语言包未安装，尝试安装...")
+    def _install_silent(pkg_name):
         try:
-            result = subprocess.run(
+            r = subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
                  f"Add-WindowsCapability -Online -Name {pkg_name}"],
                 capture_output=True, text=True, timeout=120
             )
-            if result.returncode == 0:
-                logger.info(f"{desc}语言包安装成功")
-            else:
-                logger.warning(f"{desc}语言包安装失败: {result.stderr.strip()}")
-                all_ok = False
-        except Exception as e:
-            logger.warning(f"{desc}语言包安装异常: {e}")
-            all_ok = False
+            return r.returncode == 0
+        except Exception:
+            return False
 
-    if not all_ok:
-        logger.error(
-            "OCR语言包安装失败。请以管理员身份打开PowerShell，执行以下命令后重启程序:\n"
-            "  Add-WindowsCapability -Online -Name Language.OCR~~~en-US~0.0.1.0\n"
-            "  Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0"
+    def _install_elevated(pkg_name, desc):
+        ps = (
+            f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
+            f"-ArgumentList '-NoProfile -Command "
+            f"\\\"Add-WindowsCapability -Online -Name {pkg_name}; exit\\\"'"
         )
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, timeout=180
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
 
-    _ocr_lang_installed = True  # 已尝试，不再重试
-    return all_ok
+    # 逐个检查并安装
+    missing = [(n, d) for n, d in needed if not _check_installed(n)]
+    if not missing:
+        logger.info("OCR语言包已全部安装")
+        _ocr_lang_installed = True
+        return True
+
+    # 先静默尝试
+    all_ok = True
+    for pkg_name, desc in missing:
+        logger.info(f"{desc}语言包未安装，静默安装...")
+        if _install_silent(pkg_name):
+            logger.info(f"{desc}语言包安装成功")
+        else:
+            all_ok = False
+            break
+
+    if all_ok:
+        _ocr_lang_installed = True
+        return True
+
+    # 静默失败 → GUI提示 + UAC弹窗
+    if glog:
+        glog("需要安装Windows OCR语言包，请在弹出的权限确认窗口点击'是'")
+
+    for pkg_name, desc in missing:
+        if _check_installed(pkg_name):
+            continue
+        logger.info(f"{desc}语言包提权安装（将弹出UAC窗口）...")
+        if _install_elevated(pkg_name, desc):
+            logger.info(f"{desc}语言包提权安装成功")
+        else:
+            logger.error(f"{desc}语言包安装失败")
+            if glog:
+                glog(f"OCR语言包安装失败，请以管理员运行PowerShell执行: "
+                     f"Add-WindowsCapability -Online -Name {pkg_name}")
+            return False
+
+    _ocr_lang_installed = True
+    return True
 
 
 # ---------- OCR 辅助函数 ----------
@@ -276,11 +313,11 @@ def _screenshot_region(left, top, right, bottom):
         return Image.frombytes("RGB", (width, height), sct_img.bgra, "raw", "BGRX")
 
 
-def _ocr_find_text(image, target_text, region_left=0, region_top=0):
+def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
     """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
     from winocr import recognize_pil_sync
 
-    _ensure_chinese_ocr()
+    _ensure_chinese_ocr(glog=glog)
 
     try:
         result = recognize_pil_sync(image)
@@ -316,11 +353,11 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0):
     return matches
 
 
-def _ocr_contains_text(image, target_text):
+def _ocr_contains_text(image, target_text, glog=None):
     """OCR 识别图片，检查是否包含目标文字"""
     from winocr import recognize_pil_sync
 
-    _ensure_chinese_ocr()
+    _ensure_chinese_ocr(glog=glog)
 
     try:
         result = recognize_pil_sync(image)
@@ -591,11 +628,10 @@ class WeChatController:
 
         _glog(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
-        matches = _ocr_find_text(img, "网络查找", region[0], region[1])
+        matches = _ocr_find_text(img, "网络查找", region[0], region[1], glog=_glog)
         if matches:
             cx, cy, text = matches[0]
             _glog(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
-            # 点击前确保微信在前台
             if self.wechat_window:
                 try:
                     wh = self.wechat_window.NativeWindowHandle
@@ -614,7 +650,7 @@ class WeChatController:
         _glog(f"扩大截取区域2: {region2}")
         img2 = _screenshot_region(*region2)
         if img2 is not None:
-            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1])
+            matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1], glog=_glog)
             if matches2:
                 cx, cy, text = matches2[0]
                 _glog(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
@@ -748,7 +784,7 @@ class WeChatController:
                 try:
                     img = _screenshot_region(*popup_rect)
                     if img is not None:
-                        has_add_button = _ocr_contains_text(img, "添加到通讯录")
+                        has_add_button = _ocr_contains_text(img, "添加到通讯录", glog=_glog)
                         _glog(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
                               f"→ {'找到' if has_add_button else '未找到'}'添加到通讯录'")
                 except Exception as e:
