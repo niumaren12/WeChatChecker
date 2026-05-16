@@ -571,18 +571,18 @@ class WeChatController:
                 _glog(f"  ... 省略 {len(found_ctrls)-40} 个")
             _glog("=== 控件列表结束 ===")
 
-            # 判断逻辑
-            diag = f"弹窗检测: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)} 搜索范围={'弹窗' if popup_rect else '无'}"
+            # 判断逻辑 — CEF 弹窗内部无 UIA 控件，以弹窗是否打开为主要判据
+            diag = f"弹窗: 按钮={has_add_button} 昵称={nickname_text} 控件数={len(found_ctrls)}"
             logger.info(diag)
-            # 通过实例变量传诊断信息给引擎
             self._last_popup_diag = diag
+
             if has_add_button:
                 return ("normal", nickname_text or "(未识别昵称)")
-            elif len(found_ctrls) >= 2:
-                logger.warning("弹窗存在但未找到按钮，默认视为正常")
-                return ("normal", "(CEF兼容)")
-            else:
-                return ("abnormal", f"控件极少(共{len(found_ctrls)}个)，{diag}")
+
+            # CEF 弹窗：无内部控件但弹窗已打开 → 判定为正常
+            # 异常号（用户不存在）不会弹出"添加朋友"窗口，会走到 not_found 分支
+            _glog("CEF弹窗: 内部控件不可见，弹窗已打开→判定正常")
+            return ("normal", "(CEF弹窗已打开)" if len(found_ctrls) == 0 else f"(控件{len(found_ctrls)}个)")
 
         except Exception as e:
             logger.error(f"检测弹窗状态时出错: {e}")
