@@ -20,7 +20,7 @@ jobs:
       - name: 安装依赖
         shell: pwsh
         run: |
-          pip install pyinstaller uiautomation psutil
+          pip install pyinstaller uiautomation psutil winocr mss
 
       - name: 生成图标
         shell: pwsh
