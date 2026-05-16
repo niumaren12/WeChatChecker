@@ -42,32 +42,35 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   - `_type_text(text)` — SendInput + KEYEVENTF_UNICODE 逐字符输入
   - 输入回退：base64 编码 + PowerShell `[Windows.Clipboard]::SetText` + Ctrl+V
 - **窗口查找仍可用**（找微信主窗口、弹窗），但内部控件不可用
-- **下拉菜单和弹窗检测用 OCR (Windows 内置引擎)**：截图 → winocr 识别文字 → 获取坐标/判断文字存在
-  - 下拉：mss 截图搜索框下方 → winocr 找"网络查找" → `_mouse_click` 点击文字中心
-  - 弹窗：保留 UIA 三级搜索定位弹窗 → mss 截图弹窗区域 → winocr 检查是否包含"添加到通讯录"
+- **下拉菜单和弹窗检测用 Tesseract OCR（内置打包）**：截图 → pytesseract 识别文字 → 获取坐标/判断文字存在
+  - Tesseract 引擎 + 中文语言包通过 PyInstaller `--add-data` 打包进 exe，运行时自动解压
+  - `_get_tesseract_path()` 优先用打包版，源码运行时从 PATH 找
+  - 下拉：mss 截图搜索框下方 → pytesseract 找"网络查找" → `_mouse_click` 点击文字中心
+  - 弹窗：保留 UIA 三级搜索定位弹窗 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
 
 ## 微信窗口操作流程
 
 1. `activate_window`: Win32 `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow`
 2. `focus_search_box`: `_send_hotkey(ctrl, f)` → 等待 1.5s
 3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板
-4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → winocr 识别"网络查找" → `_mouse_click` 点击文字中心
-5. `check_popup_status`: 三级弹窗搜索定位 → mss 截图弹窗区域 → winocr 检查是否包含"添加到通讯录"
+4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → pytesseract 识别"网络查找" → `_mouse_click` 点击文字中心
+5. `check_popup_status`: 三级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
 
-## OCR 文字识别（Windows 内置引擎）
+## OCR 文字识别（Tesseract 内置打包）
 
-使用 `winocr`（Windows.Media.Ocr 封装）+ `mss` 截图实现屏幕文字识别：
+使用 `pytesseract` + `mss` 截图实现屏幕文字识别。Tesseract 引擎和中文语言包随 exe 打包，无需系统权限。
 
+- `_get_tesseract_path()` — 优先用 PyInstaller 打包的 tesseract.exe，源码运行从 PATH 找
 - `_screenshot_region(left, top, right, bottom)` — mss 截取屏幕区域，返回 PIL Image
-- `_ocr_find_text(image, target, region_left, region_top)` — winocr 识别文字，返回匹配项屏幕绝对坐标列表
-- `_ocr_contains_text(image, target)` — winocr 检查图片是否包含目标文字
+- `_ocr_find_text(image, target, region_left, region_top)` — pytesseract 识别，返回匹配项屏幕绝对坐标列表
+- `_ocr_contains_text(image, target)` — pytesseract 检查图片是否包含目标文字
 - `_mouse_click(x, y)` — Win32 `SetCursorPos` + `mouse_event` 点击屏幕坐标
 
 两个核心场景：
 1. **下拉菜单**：截图搜索框下方区域 → OCR 找"网络查找" → 鼠标点击
 2. **弹窗按钮**：保留 UIA 三级搜索定位弹窗 → 截图弹窗 → OCR 检查"添加到通讯录"
 
-依赖：`winocr>=1.3.0`、`mss>=9.0.0`、`Pillow`（mss 依赖）
+依赖：`pytesseract>=0.3.10`、`mss>=9.0.0`、`Pillow>=10.0.0`、Tesseract 引擎（CI 构建时通过 choco 安装后打入 exe）
 
 ## 跨层日志回调
 

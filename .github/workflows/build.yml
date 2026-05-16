@@ -17,10 +17,26 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 安装依赖
+      - name: 安装 Python 依赖
         shell: pwsh
         run: |
-          pip install pyinstaller uiautomation psutil winocr mss Pillow
+          pip install pyinstaller uiautomation psutil mss Pillow pytesseract
+
+      - name: 下载 Tesseract OCR
+        shell: pwsh
+        run: |
+          mkdir tesseract_bundle\tessdata
+          # 安装便携版 tesseract
+          choco install tesseract-ocr --no-progress -y --limit-output 2>$null
+          # 复制可执行文件和 DLL
+          copy "C:\Program Files\Tesseract-OCR\tesseract.exe" tesseract_bundle\
+          copy "C:\Program Files\Tesseract-OCR\*.dll" tesseract_bundle\
+          # 下载中文简体语言包
+          curl -sL -o tesseract_bundle\tessdata\chi_sim.traineddata `
+            https://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata
+          echo "Tesseract 打包目录:"
+          dir tesseract_bundle\
+          dir tesseract_bundle\tessdata\
 
       - name: 生成图标
         shell: pwsh
@@ -29,7 +45,11 @@ jobs:
       - name: 打包为 exe
         shell: cmd
         run: |
-          pyinstaller --onefile --windowed --icon=app.ico --name WeChatChecker --add-data "config.json;." --add-data "wechat_ids.txt;." main.py
+          pyinstaller --onefile --windowed --icon=app.ico --name WeChatChecker ^
+            --add-data "config.json;." ^
+            --add-data "wechat_ids.txt;." ^
+            --add-data "tesseract_bundle;tesseract" ^
+            main.py
 
       - name: 复制配置文件
         shell: cmd

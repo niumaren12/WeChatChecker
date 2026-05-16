@@ -196,103 +196,30 @@ def _type_text(text):
         logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
-# ---------- OCR 语言包自动安装 ----------
+# ---------- Tesseract 路径 ----------
 
-_ocr_lang_installed = False  # 是否已成功安装OCR语言包
+_tesseract_path = None
 
 
-def _ensure_chinese_ocr(glog=None):
-    """检查并自动安装 Windows OCR 语言包（en-US + zh-CN）
-    glog: 可选回调(msg) 用于推送GUI消息
-    先静默安装，失败则通过glog提示用户后弹UAC提权安装"""
-    global _ocr_lang_installed
-    if _ocr_lang_installed:
-        return True
+def _get_tesseract_path():
+    """获取 Tesseract 可执行文件路径（优先用 PyInstaller 打包的版本）"""
+    global _tesseract_path
+    if _tesseract_path:
+        return _tesseract_path
 
-    import subprocess
+    import os, sys
 
-    needed = [
-        ("Language.OCR~~~en-US~0.0.1.0", "英文OCR"),
-        ("Language.OCR~~~zh-CN~0.0.1.0", "中文OCR"),
-    ]
+    # PyInstaller 打包后，tesseract 在临时解压目录
+    if getattr(sys, 'frozen', False):
+        base = sys._MEIPASS
+        candidate = os.path.join(base, "tesseract", "tesseract.exe")
+        if os.path.exists(candidate):
+            _tesseract_path = candidate
+            return _tesseract_path
 
-    def _check_installed(pkg_name):
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-WindowsCapability -Online -Name '{pkg_name}').State"],
-                capture_output=True, text=True, timeout=30
-            )
-            return r.returncode == 0 and "Installed" in r.stdout
-        except Exception:
-            return False
-
-    def _install_silent(pkg_name):
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"Add-WindowsCapability -Online -Name {pkg_name}"],
-                capture_output=True, text=True, timeout=120
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
-
-    def _install_elevated(pkg_name, desc):
-        ps = (
-            f"Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
-            f"-ArgumentList '-NoProfile -Command "
-            f"\\\"Add-WindowsCapability -Online -Name {pkg_name}; exit\\\"'"
-        )
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True, text=True, timeout=180
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
-
-    # 逐个检查并安装
-    missing = [(n, d) for n, d in needed if not _check_installed(n)]
-    if not missing:
-        logger.info("OCR语言包已全部安装")
-        _ocr_lang_installed = True
-        return True
-
-    # 先静默尝试
-    all_ok = True
-    for pkg_name, desc in missing:
-        logger.info(f"{desc}语言包未安装，静默安装...")
-        if _install_silent(pkg_name):
-            logger.info(f"{desc}语言包安装成功")
-        else:
-            all_ok = False
-            break
-
-    if all_ok:
-        _ocr_lang_installed = True
-        return True
-
-    # 静默失败 → GUI提示 + UAC弹窗
-    if glog:
-        glog("需要安装Windows OCR语言包，请在弹出的权限确认窗口点击'是'")
-
-    for pkg_name, desc in missing:
-        if _check_installed(pkg_name):
-            continue
-        logger.info(f"{desc}语言包提权安装（将弹出UAC窗口）...")
-        if _install_elevated(pkg_name, desc):
-            logger.info(f"{desc}语言包提权安装成功")
-        else:
-            logger.error(f"{desc}语言包安装失败")
-            if glog:
-                glog(f"OCR语言包安装失败，请以管理员运行PowerShell执行: "
-                     f"Add-WindowsCapability -Online -Name {pkg_name}")
-            return False
-
-    _ocr_lang_installed = True
-    return True
+    # 源码运行时从 PATH 找
+    _tesseract_path = "tesseract"
+    return _tesseract_path
 
 
 # ---------- OCR 辅助函数 ----------
@@ -315,58 +242,52 @@ def _screenshot_region(left, top, right, bottom):
 
 def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
     """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
-    from winocr import recognize_pil_sync
+    import pytesseract
 
-    _ensure_chinese_ocr(glog=glog)
+    pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
 
     try:
-        result = recognize_pil_sync(image)
+        data = pytesseract.image_to_data(
+            image, lang="chi_sim", output_type=pytesseract.Output.DICT
+        )
     except Exception as e:
-        logger.warning(f"winocr 识别失败: {e}")
+        logger.warning(f"Tesseract OCR 失败: {e}")
         return []
 
-    # recognize_pil_sync 返回 dict: {'text': ..., 'lines': [{'text':..., 'words':[...]}, ...]}
-    lines = result.get("lines", []) if isinstance(result, dict) else getattr(result, "lines", [])
     matches = []
-    for line in lines:
-        # line 可能是 dict 或对象
-        line_text = line.get("text", "") if isinstance(line, dict) else getattr(line, "text", "")
-        if target_text in line_text:
-            # 用第一个 word 的 bounding_rect 定位
-            words = line.get("words", []) if isinstance(line, dict) else getattr(line, "words", [])
-            if words:
-                w = words[0]
-                if isinstance(w, dict):
-                    br = w.get("bounding_rect", {})
-                    wx, wy, ww, wh = br.get("x", 0), br.get("y", 0), br.get("width", 0), br.get("height", 0)
-                else:
-                    br = getattr(w, "bounding_rect", None)
-                    if br:
-                        wx, wy, ww, wh = getattr(br, "x", 0), getattr(br, "y", 0), getattr(br, "width", 0), getattr(br, "height", 0)
-                    else:
-                        wx = wy = ww = wh = 0
-                cx = region_left + wx + ww // 2
-                cy = region_top + wy + wh // 2
-            else:
-                cx = cy = 0
-            matches.append((cx, cy, line_text))
+    n = len(data["text"])
+    for i in range(n):
+        text = data["text"][i].strip()
+        conf = data["conf"][i]
+        if target_text in text and conf > 20:
+            x = data["left"][i]
+            y = data["top"][i]
+            w = data["width"][i]
+            h = data["height"][i]
+            cx = region_left + x + w // 2
+            cy = region_top + y + h // 2
+            matches.append((cx, cy, text))
     return matches
 
 
 def _ocr_contains_text(image, target_text, glog=None):
     """OCR 识别图片，检查是否包含目标文字"""
-    from winocr import recognize_pil_sync
+    import pytesseract
 
-    _ensure_chinese_ocr(glog=glog)
+    pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
 
     try:
-        result = recognize_pil_sync(image)
+        data = pytesseract.image_to_data(
+            image, lang="chi_sim", output_type=pytesseract.Output.DICT
+        )
     except Exception as e:
-        logger.warning(f"winocr 识别失败: {e}")
+        logger.warning(f"Tesseract OCR 失败: {e}")
         return False
 
-    full_text = result.get("text", "") if isinstance(result, dict) else getattr(result, "text", "")
-    return target_text in full_text
+    for text in data["text"]:
+        if target_text in text:
+            return True
+    return False
 
 
 def _mouse_click(x, y):
@@ -585,7 +506,7 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
-        截图搜索框下方区域 → winocr 识别 → 鼠标点击文字中心
+        截图搜索框下方区域 → Tesseract 识别 → 鼠标点击文字中心
         """
         def _glog(msg, level="info"):
             if level == "info":
@@ -667,14 +588,14 @@ class WeChatController:
                 return True
 
         try:
-            from winocr import recognize_pil_sync
-            result = recognize_pil_sync(img)
-            lines = result.get("lines", []) if isinstance(result, dict) else getattr(result, "lines", [])
-            all_text = " | ".join([
-                (ln.get("text", "") if isinstance(ln, dict) else getattr(ln, "text", ""))
-                for ln in lines[:15]
-            ])
-            _glog(f"OCR识别到的全部文字({len(lines)}行): {all_text}", "warn")
+            import pytesseract
+            pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
+            data = pytesseract.image_to_data(
+                img, lang="chi_sim", output_type=pytesseract.Output.DICT
+            )
+            texts = [t.strip() for t in data["text"] if t.strip()]
+            all_text = " | ".join(texts[:15])
+            _glog(f"OCR识别到的全部文字({len(texts)}条): {all_text}", "warn")
         except Exception as e2:
             _glog(f"OCR调试输出异常: {e2}", "error")
 
