@@ -196,6 +196,61 @@ def _type_text(text):
         logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
+# ---------- OCR 语言包自动安装 ----------
+
+_ocr_lang_installed = False  # 是否已尝试安装过中文OCR语言包
+
+
+def _ensure_chinese_ocr():
+    """检查并自动安装 Windows 中文 OCR 语言包（需管理员权限）"""
+    global _ocr_lang_installed
+    if _ocr_lang_installed:
+        return True
+
+    import subprocess
+
+    # 检查中文OCR是否已安装
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-WindowsCapability -Online | "
+             "Where-Object {$_.Name -like '*OCR*zh-CN*'}).State"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and "Installed" in result.stdout:
+            _ocr_lang_installed = True
+            return True
+    except Exception:
+        pass
+
+    logger.info("中文OCR语言包未安装，尝试自动安装（需管理员权限）...")
+
+    try:
+        # 用 Start-Process -Verb RunAs 提权安装
+        ps_cmd = (
+            "Start-Process powershell -Verb RunAs -Wait -ArgumentList "
+            "'-NoProfile -Command \"Add-WindowsCapability -Online "
+            "-Name Language.OCR~~~zh-CN~0.0.1.0\"'"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            logger.info("中文OCR语言包安装成功")
+            _ocr_lang_installed = True
+            return True
+        else:
+            logger.warning(f"安装失败(exit={result.returncode}): {result.stderr}")
+    except Exception as e:
+        logger.warning(f"安装中文OCR语言包异常: {e}")
+
+    logger.error("中文OCR语言包安装失败，请手动以管理员运行: "
+                  "Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0")
+    _ocr_lang_installed = True  # 标记已尝试，不再重试
+    return False
+
+
 # ---------- OCR 辅助函数 ----------
 
 def _screenshot_region(left, top, right, bottom):
@@ -217,6 +272,8 @@ def _screenshot_region(left, top, right, bottom):
 def _ocr_find_text(image, target_text, region_left=0, region_top=0):
     """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
     from winocr import recognize_pil_sync
+
+    _ensure_chinese_ocr()
 
     try:
         result = recognize_pil_sync(image)
@@ -255,6 +312,8 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0):
 def _ocr_contains_text(image, target_text):
     """OCR 识别图片，检查是否包含目标文字"""
     from winocr import recognize_pil_sync
+
+    _ensure_chinese_ocr()
 
     try:
         result = recognize_pil_sync(image)
