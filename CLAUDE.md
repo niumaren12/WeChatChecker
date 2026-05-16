@@ -28,6 +28,9 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   │   └── wechat_controller.py  # 微信自动化（WeChatController）
   ├── config_manager.py # 配置读写（config.json）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
+
+辅助工具:
+  diagnose_wechat_window.py  # 桌面窗口诊断 — 列出所有顶层窗口类名/标题/位置
 ```
 
 **数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 三级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
@@ -62,7 +65,8 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 - `_get_tesseract_path()` — 优先用 PyInstaller 打包的 tesseract.exe，源码运行从 PATH 找
 - `_screenshot_region(left, top, right, bottom)` — mss 截取屏幕区域，返回 PIL Image
-- `_ocr_find_text(image, target, region_left, region_top)` — pytesseract 识别，返回匹配项屏幕绝对坐标列表
+- `_preprocess_for_ocr(image)` — 图像预处理：2x放大(LANCZOS) → 灰度 → 锐化 → 二值化(threshold=140)，所有 OCR 调用前必走
+- `_ocr_find_text(image, target, region_left, region_top)` — pytesseract 识别（PSM6），返回匹配项屏幕绝对坐标列表，坐标自动除以2还原
 - `_ocr_contains_text(image, target)` — pytesseract 检查图片是否包含目标文字
 - `_mouse_click(x, y)` — Win32 `SetCursorPos` + `mouse_event` 点击屏幕坐标
 
@@ -85,7 +89,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 ## 线程模型
 
-检查循环在 daemon 子线程。GUI 回调通过 `root.after(0, ...)` 回主线程。异常回调 `_on_engine_abnormal` 用 `event.wait()` 阻塞等待用户手动关闭弹窗（不设超时）。
+检查循环在 daemon 子线程。GUI 回调通过 `root.after(0, ...)` 回主线程。异常回调 `_on_engine_abnormal` 用 `event.wait()` 阻塞等待用户手动关闭弹窗（不设超时）。子线程启动前通过 `config_snapshot` 字典快照所有配置参数，避免子线程读取 config 时被主线程并发修改。等待逻辑 `_wait_with_stop()` 每 0.5s 轮询 `_stop_event`，可被停止信号打断。
 
 ## 配置文件
 
