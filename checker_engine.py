@@ -137,13 +137,19 @@ class CheckerEngine:
 
         config_snapshot = self._build_config_snapshot()
 
-        thread = threading.Thread(
-            target=self._run_check_loop,
-            args=(ids_list, config_snapshot),
-            daemon=True,
-            name="CheckerThread",
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._run_check_loop,
+                args=(ids_list, config_snapshot),
+                daemon=True,
+                name="CheckerThread",
+            )
+            thread.start()
+        except Exception as e:
+            self._running = False
+            self._emit_log(f"启动检查线程失败: {e}", "error")
+            return
+
         self._emit_log(f"检查启动，共 {len(ids_list)} 个微信号")
 
     def _run_check_loop(self, all_ids, cfg):

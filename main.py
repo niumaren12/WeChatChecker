@@ -74,6 +74,9 @@ class WeChatCheckerApp:
         # 窗口居中
         self._center_window()
 
+        # 延迟检查运行环境（窗口显示后执行）
+        self.root.after(500, self._check_runtime_env)
+
     # ==================== 图标 ====================
 
     def _set_icon(self):
@@ -672,6 +675,15 @@ class WeChatCheckerApp:
             state=tk.DISABLED, text="🔇 声音已停"
         )
 
+    def _append_log_immediate(self, msg):
+        """立即写入日志区（绕过缓冲区，用于关键错误提示）"""
+        def _write():
+            self.log_text.config(state=tk.NORMAL)
+            self.log_text.insert(tk.END, msg + "\n")
+            self.log_text.see(tk.END)
+            self.log_text.config(state=tk.DISABLED)
+        self.root.after(0, _write)
+
     # ==================== UI 更新方法 ====================
 
     def _update_status(self, text):
@@ -719,9 +731,11 @@ class WeChatCheckerApp:
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
 
-        # 清空上一次的日志
+        # 清空上一次的日志，立即写入启动提示
         self.log_text.config(state=tk.NORMAL)
         self.log_text.delete(1.0, tk.END)
+        self.log_text.insert(tk.END, "正在启动检查...\n")
+        self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
         self.progress_var.set(0)
         self.progress_label.config(text="")
@@ -735,7 +749,15 @@ class WeChatCheckerApp:
 
         # 启动检查
         logger.info("用户点击开始检查")
-        self.engine.start_with_ids(ids)
+        try:
+            self.engine.start_with_ids(ids)
+        except Exception as e:
+            import traceback
+            err_msg = f"启动检查失败: {e}\n{traceback.format_exc()}"
+            logger.error(err_msg)
+            self._append_log_immediate(f"[错误] {err_msg}")
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
 
     def _stop_check(self):
         """停止检查"""
@@ -766,6 +788,27 @@ class WeChatCheckerApp:
         x = (sw - w) // 2
         y = (sh - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _check_runtime_env(self):
+        """检查运行环境：Tesseract OCR 是否可用"""
+        try:
+            from wechat_controller import _get_tesseract_path
+            import subprocess, os
+            tesseract = _get_tesseract_path()
+            result = subprocess.run(
+                [tesseract, "--version"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=0x08000000 if sys.platform == "win32" else 0,
+            )
+            if result.returncode != 0:
+                raise OSError(f"tesseract 返回码 {result.returncode}")
+            logger.info(f"Tesseract OCR 可用: {result.stdout.split(chr(10))[0]}")
+        except Exception as e:
+            logger.warning(f"Tesseract OCR 自检失败: {e}")
+            self._append_log_immediate(
+                "[警告] Tesseract OCR 不可用，下拉菜单识别和弹窗检测将无法工作！\n"
+                "       请确保 tesseract 已安装并添加到 PATH，或使用正式打包的 exe。"
+            )
 
     # ==================== 运行 ====================
 
