@@ -381,7 +381,7 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
 
 
 def _ocr_contains_text(image, target_text, glog=None):
-    """OCR 识别图片，检查是否包含目标文字"""
+    """OCR 识别图片，检查是否包含目标文字（支持CEF字符间距拆分）"""
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
@@ -397,9 +397,59 @@ def _ocr_contains_text(image, target_text, glog=None):
         logger.warning(f"Tesseract OCR 失败: {e}")
         return False
 
-    for text in data["text"]:
+    # ---- 第1步：逐条目精确匹配 ----
+    n = len(data["text"])
+    for i in range(n):
+        text = data["text"][i].strip()
         if target_text in text:
             return True
+
+    # ---- 第2步：同行拼接回退（CEF字符间距导致单字拆分）----
+    scale = 0.5
+    entries = []
+    for i in range(n):
+        text = data["text"][i].strip()
+        conf = data["conf"][i]
+        if text and conf > 10:
+            x = int(data["left"][i] * scale)
+            y = int(data["top"][i] * scale)
+            entries.append({"text": text, "y": y, "x": x})
+
+    if entries:
+        # 按 Y 分组（容差 10px）
+        entries.sort(key=lambda e: e["y"])
+        rows = []
+        current_row = [entries[0]]
+        for e in entries[1:]:
+            if abs(e["y"] - current_row[-1]["y"]) <= 10:
+                current_row.append(e)
+            else:
+                rows.append(current_row)
+                current_row = [e]
+        rows.append(current_row)
+
+        # 每行按 X 排序后拼接检查
+        for row in rows:
+            row.sort(key=lambda e: e["x"])
+            merged = "".join(e["text"] for e in row)
+            if target_text in merged:
+                return True
+
+        # 全文拼接兜底
+        all_entries = []
+        for row in rows:
+            all_entries.extend(row)
+        all_entries.sort(key=lambda e: (e["y"], e["x"]))
+        full_text = "".join(e["text"] for e in all_entries)
+        if target_text in full_text:
+            return True
+
+    # 未找到时输出诊断信息
+    if glog:
+        all_texts = [t.strip() for t in data["text"] if t.strip()]
+        glog(f"OCR未找到'{target_text}'，识别到的文字({len(all_texts)}条): "
+             f"{' | '.join(all_texts[:20])}")
+
     return False
 
 
