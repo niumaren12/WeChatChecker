@@ -472,28 +472,25 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        像素检测绿色图标位置 → SetCursorPos + mouse_event 点击
+        先尝试像素识别+鼠标点击，失败回退键盘 ↑+Enter
         """
         if not UIA_AVAILABLE:
             return False
 
-        try:
-            time.sleep(1.5)
+        time.sleep(1.5)
 
-            # 截取微信窗口搜索框下方下拉区域
+        # 尝试像素识别（可能因 PyInstaller 环境问题失败）
+        try:
             if self.wechat_window:
                 hwnd = self.wechat_window.NativeWindowHandle
                 if hwnd:
                     r = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
                     win_w = r.right - r.left
-                    # 截取搜索框+下拉区域：从 y=60 到 y=330
                     w, h, pixels = _capture_pixels(hwnd, 0, 60, win_w, 330)
                     if w > 0 and h > 0:
-                        # 扫描找绿色图标（网络查找，左侧 y=130~190 区域）
-                        # 绿色范围 RGB: R=(0,80), G=(150,255), B=(0,120)
                         green_range = ((0, 80), (150, 255), (0, 120))
-                        green_x, green_y, green_max = 0, 0, 0
+                        green_y, green_max = 0, 0
                         for scan_y in range(70, min(140, h)):
                             cnt = _count_pixels(pixels, w, h, 10, scan_y, 80, scan_y + 3, green_range)
                             if cnt > green_max:
@@ -501,33 +498,31 @@ class WeChatController:
                                 green_y = scan_y
 
                         if green_max > 5:
-                            # 找到绿色图标，计算屏幕绝对坐标
-                            screen_x = r.left + 40  # 图标中心大约在 x=40 处
-                            screen_y = r.top + 60 + green_y  # 窗口内 y + 扫描偏移
-                            _glog = self._gui_log
-                            if _glog:
-                                _glog(f"绿色图标: y={green_y}, 绿色像素={green_max}, "
-                                      f"屏幕坐标=({screen_x},{screen_y})")
-                            # 鼠标点击
+                            screen_x = r.left + 40
+                            screen_y = r.top + 60 + green_y
+                            if self._gui_log:
+                                self._gui_log(f"绿色图标: y={green_y}, 像素={green_max}, 点击({screen_x},{screen_y})")
                             ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
                             time.sleep(0.1)
-                            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+                            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
                             time.sleep(0.05)
-                            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+                            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
                             time.sleep(2.0)
-                            logger.info(f"已通过像素定位+鼠标点击下拉项 ({screen_x},{screen_y})")
+                            logger.info(f"鼠标点击下拉项 ({screen_x},{screen_y})")
                             return True
+        except Exception as e:
+            logger.warning(f"像素识别失败: {e}，回退键盘")
 
-            # 回退：键盘 ↑+Enter
-            logger.info("像素检测未找到绿色图标，回退键盘 ↑+Enter")
+        # 回退：键盘 ↑+Enter
+        try:
+            logger.info("键盘 ↑+Enter 选择下拉项")
             _press_key(0x26)  # VK_UP
             time.sleep(0.3)
             _press_key(0x0D)  # VK_RETURN
             time.sleep(2.0)
             return True
-
         except Exception as e:
-            logger.error(f"点击下拉项失败: {e}")
+            logger.error(f"键盘选择下拉项失败: {e}")
             return False
 
     # ==================== 弹窗检测 ====================
@@ -629,36 +624,33 @@ class WeChatController:
 
             # 像素检测"添加到通讯录"按钮（灰色 RGB≈204,204,204）
             has_add_button = False
-            nickname_text = ""
-
             if popup_rect and popup_hwnd:
-                pw = popup_rect[2] - popup_rect[0]
-                ph = popup_rect[3] - popup_rect[1]
-                w, h, pixels = _capture_pixels(popup_hwnd, 0, 0, pw, ph)
-                if w > 0 and h > 0:
-                    # 按钮在弹窗底部 80%-95% 区域，水平居中
-                    btn_x1 = int(w * 0.10)
-                    btn_y1 = int(h * 0.80)
-                    btn_x2 = int(w * 0.90)
-                    btn_y2 = int(h * 0.95)
-                    # 灰色按钮 RGB 范围: (170-240, 170-240, 170-240)
-                    gray_range = ((170, 240), (170, 240), (170, 240))
-                    gray_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, gray_range)
-                    total_in_rect = (btn_x2 - btn_x1) * (btn_y2 - btn_y1)
-                    gray_pct = gray_count / total_in_rect * 100 if total_in_rect > 0 else 0
-                    has_add_button = gray_pct > 15  # 超过 15% 的像素是灰色 → 按钮存在
-                    _glog(f"像素检测: 灰色像素={gray_count}/{total_in_rect} ({gray_pct:.0f}%) → "
-                          f"按钮={'存在' if has_add_button else '不存在'}")
-                else:
-                    _glog("像素截图失败，回退到弹窗打开=正常")
+                try:
+                    pw = popup_rect[2] - popup_rect[0]
+                    ph = popup_rect[3] - popup_rect[1]
+                    w, h, pixels = _capture_pixels(popup_hwnd, 0, 0, pw, ph)
+                    if w > 0 and h > 0:
+                        btn_x1 = int(w * 0.10)
+                        btn_y1 = int(h * 0.80)
+                        btn_x2 = int(w * 0.90)
+                        btn_y2 = int(h * 0.95)
+                        gray_range = ((170, 240), (170, 240), (170, 240))
+                        gray_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, gray_range)
+                        total_in_rect = (btn_x2 - btn_x1) * (btn_y2 - btn_y1)
+                        gray_pct = gray_count / total_in_rect * 100 if total_in_rect > 0 else 0
+                        has_add_button = gray_pct > 15
+                        _glog(f"像素检测: 灰色={gray_count}/{total_in_rect} ({gray_pct:.0f}%) → "
+                              f"按钮={'存在' if has_add_button else '不存在'}")
+                except Exception as e:
+                    _glog(f"像素检测异常: {e}，回退到弹窗打开=正常")
 
             # 判断逻辑
             if has_add_button:
-                _glog("弹窗检测: 找到'添加到通讯录'按钮 → 正常")
+                _glog("弹窗: 找到按钮 → 正常")
                 return ("normal", "(已识别按钮)")
             elif popup_rect:
-                _glog("弹窗检测: 未找到按钮，但弹窗已打开 → 正常(CEF兼容)")
-                return ("normal", "(CEF弹窗)")
+                _glog("弹窗: 已打开 → 正常")
+                return ("normal", "(弹窗已打开)")
             else:
                 return ("abnormal", "弹窗未打开")
 
