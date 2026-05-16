@@ -10,6 +10,7 @@ import sys
 from config_manager import ConfigManager
 from checker_engine import CheckerEngine
 from logger_setup import logger
+import wechat_controller  # 确保 PyInstaller 打包此模块
 
 
 class WeChatCheckerApp:
