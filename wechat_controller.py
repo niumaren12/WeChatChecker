@@ -402,7 +402,7 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        用键盘 ↓ + Enter 操作，不依赖查找 UI 控件
+        全局遍历 + 位置筛选 + InvokePattern 点击，不依赖键盘盲操作
         """
         if not UIA_AVAILABLE:
             return False
@@ -411,15 +411,102 @@ class WeChatController:
             # 等待搜索结果下拉列表出现
             time.sleep(1.5)
 
-            # 微信默认选中"搜索网络结果"，目标"网络查找"在上方，按 ↑ 往上一步
-            _press_key(0x26)  # VK_UP → 从"搜索网络结果"回到"网络查找手机/QQ号"
-            time.sleep(0.3)
+            # 获取微信主窗口位置，用于限定搜索范围
+            wechat_rect = None
+            try:
+                if self.wechat_window:
+                    hwnd = self.wechat_window.NativeWindowHandle
+                    if hwnd:
+                        r = ctypes.wintypes.RECT()
+                        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+                        wechat_rect = (r.left, r.top, r.right, r.bottom)
+            except Exception:
+                pass
 
-            # 按 Enter 确认选择
+            found_items = []
+            target_item = None
+
+            # 全局遍历，找下拉菜单项
+            def scan_dropdown(ctrl, depth=0):
+                nonlocal target_item
+                if depth > 20 or target_item:
+                    return
+                try:
+                    ctrl_type = type(ctrl).__name__
+                    name = ctrl.Name
+                    # ListItemControl 是下拉项
+                    if "ListItem" in ctrl_type and name:
+                        # 位置检查：在微信窗口范围内或附近
+                        try:
+                            cr = ctrl.BoundingRectangle
+                            in_range = True
+                            if wechat_rect:
+                                in_range = (cr[2] > wechat_rect[0] - 50 and
+                                            cr[0] < wechat_rect[2] + 50 and
+                                            cr[3] > wechat_rect[1] - 50 and
+                                            cr[1] < wechat_rect[3] + 50)
+                            if in_range:
+                                found_items.append((ctrl_type, name, cr))
+                                if "网络" in name or "查找" in name or "手机" in name or "QQ" in name:
+                                    target_item = ctrl
+                                    return
+                        except Exception:
+                            pass
+
+                    # 按钮或文本控件也可能是下拉项（微信 CEF 可能用不同控件类型）
+                    if ("Button" in ctrl_type or "Text" in ctrl_type) and name:
+                        keywords = ["网络查找", "查找手机", "查找QQ"]
+                        if any(kw in name for kw in keywords):
+                            try:
+                                cr = ctrl.BoundingRectangle
+                                in_range = True
+                                if wechat_rect:
+                                    in_range = (cr[2] > wechat_rect[0] - 50 and
+                                                cr[0] < wechat_rect[2] + 50 and
+                                                cr[3] > wechat_rect[1] - 50 and
+                                                cr[1] < wechat_rect[3] + 50)
+                                if in_range:
+                                    found_items.append((ctrl_type, name, cr))
+                                    target_item = ctrl
+                                    return
+                            except Exception:
+                                pass
+
+                    for child in ctrl.GetChildren():
+                        scan_dropdown(child, depth + 1)
+                except Exception:
+                    pass
+
+            scan_dropdown(auto.GetRootControl())
+
+            # 输出诊断
+            diag_lines = [f"下拉扫描: 共{len(found_items)}个候选项"]
+            for ct, nm, cr in found_items[:15]:
+                diag_lines.append(f"  {ct}: [{nm}] @ ({cr[0]},{cr[1]})")
+            for line in diag_lines:
+                logger.info(line)
+                if self._gui_log:
+                    self._gui_log(line)
+
+            if target_item:
+                # 用 InvokePattern 点击
+                try:
+                    pattern = target_item.GetInvokePattern()
+                    pattern.Invoke()
+                    logger.info(f"通过 InvokePattern 点击: {target_item.Name}")
+                    if self._gui_log:
+                        self._gui_log(f"点击下拉项: {target_item.Name}")
+                    time.sleep(2.0)
+                    return True
+                except Exception as e:
+                    logger.warning(f"InvokePattern 失败: {e}，回退键盘")
+
+            # 回退：键盘 ↑ + Enter
+            logger.info("未找到目标下拉项，回退键盘 ↑+Enter")
+            _press_key(0x26)  # VK_UP
+            time.sleep(0.3)
             _press_key(0x0D)  # VK_RETURN
             time.sleep(2.0)
-
-            logger.info("已通过键盘 ↓ + Enter 选择下拉项")
             return True
 
         except Exception as e:
