@@ -251,19 +251,20 @@ def _no_console_popen():
             subprocess.Popen = original
 
 
-def _preprocess_for_ocr(image, threshold=140):
-    """图像预处理：放大2倍 + 灰度 + 二值化，提升Tesseract识别率"""
+def _preprocess_for_ocr(image, threshold=None):
+    """图像预处理：放大2倍 + 灰度 + 锐化 + 可选二值化。
+
+    threshold=None 时不二值化，直接送灰度图给 Tesseract（推荐，保留最多信息）。
+    threshold 为整数时生效：白色背景+深色文字 → 黑白分明。
+    """
     from PIL import Image, ImageOps, ImageFilter
 
     w, h = image.size
-    # 放大2倍（Tesseract 需要文字至少10px高）
     image = image.resize((w * 2, h * 2), Image.LANCZOS)
-    # 转灰度
     image = ImageOps.grayscale(image)
-    # 锐化
     image = image.filter(ImageFilter.SHARPEN)
-    # 二值化：白色背景 + 深色文字 → 黑白分明
-    image = image.point(lambda p: 255 if p > threshold else 0)
+    if threshold is not None:
+        image = image.point(lambda p: 255 if p > threshold else 0)
     return image
 
 
@@ -286,54 +287,20 @@ def _screenshot_region(left, top, right, bottom):
 def _ocr_get_text_entries(image):
     """OCR识别图片，返回 (条目列表, 分行列表, 全文拼接)。
 
-    条目列表: [{"text", "x", "y", "w", "h", "conf"}, ...]
-    分行列表: 按Y坐标分组后的行列表，每行按X排序
-    全文拼接: 所有条目按坐标排序后拼接的完整文本
+    三通道预处理（逐级回退）：
+    1. 不做二值化（Tesseract内部自适应，保留最多笔画信息）
+    2. 阈值=100（处理高对比度屏幕）
+    3. 阈值=140（兼容原始行为）
     """
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-
-    with _no_console_popen():
-        processed = _preprocess_for_ocr(image)
-        try:
-            data = pytesseract.image_to_data(
-                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
-                config="--psm 6"  # 假设为均匀文本块
-            )
-        except Exception as e:
-            logger.warning(f"Tesseract OCR 失败: {e}")
-            return [], [], ""
-
     scale = 0.5  # 坐标缩放（图片放大了2倍）
-    n = len(data["text"])
 
-    # 收集有效条目
-    entries = []
-    for i in range(n):
-        text = data["text"][i].strip()
-        conf = data["conf"][i]
-        if text and conf > 10:
-            x = int(data["left"][i] * scale)
-            y = int(data["top"][i] * scale)
-            w = int(data["width"][i] * scale)
-            h = int(data["height"][i] * scale)
-            entries.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
-
-    if not entries:
-        # 回退：降低二值化阈值重试（某些机器上笔画细的字被截断）
-        with _no_console_popen():
-            processed2 = _preprocess_for_ocr(image, threshold=100)
-            try:
-                data = pytesseract.image_to_data(
-                    processed2, lang="chi_sim", output_type=pytesseract.Output.DICT,
-                    config="--psm 6"
-                )
-            except Exception:
-                return [], [], ""
-
-        n = len(data["text"])
-        for i in range(n):
+    def _parse_ocr_data(data):
+        """从 Tesseract 结果解析条目列表"""
+        entries = []
+        for i in range(len(data["text"])):
             text = data["text"][i].strip()
             conf = data["conf"][i]
             if text and conf > 10:
@@ -342,30 +309,53 @@ def _ocr_get_text_entries(image):
                 w = int(data["width"][i] * scale)
                 h = int(data["height"][i] * scale)
                 entries.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
+        return entries
 
-    if not entries:
-        return [], [], ""
+    # 三级管道，任一成功即返回
+    pipelines = [
+        ("灰度直送(无二值化)", None, "--psm 6"),
+        ("阈值100", 100, "--psm 6"),
+        ("阈值140(兼容)", 140, "--psm 6"),
+    ]
 
-    # 按 Y 坐标分组（容差 10px 内视为同一行）
-    entries.sort(key=lambda e: e["y"])
-    rows = []
-    current_row = [entries[0]]
-    for e in entries[1:]:
-        if abs(e["y"] - current_row[-1]["y"]) <= 10:
-            current_row.append(e)
-        else:
+    for pipe_name, threshold, tesseract_config in pipelines:
+        with _no_console_popen():
+            processed = _preprocess_for_ocr(image, threshold=threshold)
+            try:
+                data = pytesseract.image_to_data(
+                    processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+                    config=tesseract_config,
+                )
+            except Exception as e:
+                logger.warning(f"Tesseract OCR 失败({pipe_name}): {e}")
+                continue
+
+        entries = _parse_ocr_data(data)
+        if entries:
+            logger.debug(f"OCR 通道成功: {pipe_name}, {len(entries)} 个条目")
+
+            # 按 Y 坐标分组（容差 10px 内视为同一行）
+            entries.sort(key=lambda e: e["y"])
+            rows = []
+            current_row = [entries[0]]
+            for e in entries[1:]:
+                if abs(e["y"] - current_row[-1]["y"]) <= 10:
+                    current_row.append(e)
+                else:
+                    rows.append(current_row)
+                    current_row = [e]
             rows.append(current_row)
-            current_row = [e]
-    rows.append(current_row)
 
-    # 全文拼接：所有条目按坐标排序
-    all_entries = []
-    for row in rows:
-        all_entries.extend(row)
-    all_entries.sort(key=lambda e: (e["y"], e["x"]))
-    full_text = "".join(e["text"] for e in all_entries)
+            # 全文拼接
+            all_entries = []
+            for row in rows:
+                all_entries.extend(row)
+            all_entries.sort(key=lambda e: (e["y"], e["x"]))
+            full_text = "".join(e["text"] for e in all_entries)
 
-    return entries, rows, full_text
+            return entries, rows, full_text
+
+    return [], [], ""
 
 
 def _find_text_in_entries(entries, rows, target_text):
