@@ -256,6 +256,58 @@ def _screenshot_rect(left, top, right, bottom, filepath):
     return True
 
 
+def _screenshot_window(hwnd, left, top, right, bottom, filepath):
+    """截取指定窗口的内部区域（窗口相对坐标），保存为 BMP"""
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return False
+
+    hdc_win = ctypes.windll.user32.GetWindowDC(hwnd)
+    hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_win)
+    h_bmp = ctypes.windll.gdi32.CreateCompatibleBitmap(hdc_win, width, height)
+    ctypes.windll.gdi32.SelectObject(hdc_mem, h_bmp)
+    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, left, top, 0x00CC0020)
+
+    class BI(ctypes.Structure):
+        _fields_ = [
+            ("biSize", ctypes.c_uint), ("biWidth", ctypes.c_int), ("biHeight", ctypes.c_int),
+            ("biPlanes", ctypes.c_ushort), ("biBitCount", ctypes.c_ushort),
+            ("biCompression", ctypes.c_uint), ("biSizeImage", ctypes.c_uint),
+            ("biXPelsPerMeter", ctypes.c_int), ("biYPelsPerMeter", ctypes.c_int),
+            ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
+        ]
+
+    bi = BI()
+    bi.biSize = ctypes.sizeof(BI)
+    bi.biWidth = width
+    bi.biHeight = height
+    bi.biPlanes = 1
+    bi.biBitCount = 32
+    bi.biCompression = 0
+
+    buf_size = width * height * 4
+    buf = (ctypes.c_ubyte * buf_size)()
+    ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
+
+    import struct
+    row_size = width * 4
+    file_size = 54 + buf_size
+    bmp_data = bytearray()
+    bmp_data += struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
+    bmp_data += struct.pack('<IiiHHIIiiII', 40, width, height, 1, 32, 0, buf_size, 0, 0, 0, 0)
+    for y in range(height - 1, -1, -1):
+        bmp_data += bytes(buf[y * row_size:(y + 1) * row_size])
+
+    with open(filepath, 'wb') as f:
+        f.write(bmp_data)
+
+    ctypes.windll.gdi32.DeleteObject(h_bmp)
+    ctypes.windll.gdi32.DeleteDC(hdc_mem)
+    ctypes.windll.user32.ReleaseDC(hwnd, hdc_win)
+    return True
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -471,25 +523,20 @@ class WeChatController:
             # 等待搜索结果下拉列表出现
             time.sleep(1.5)
 
-            # 截图下拉菜单区域（微信窗口内搜索框下方约 300x250 像素）
+            # 截图下拉菜单区域（用 GetWindowDC 截微信窗口内部，避免桌面坐标转换）
             try:
                 if self.wechat_window:
                     hwnd = self.wechat_window.NativeWindowHandle
                     if hwnd:
                         r = ctypes.wintypes.RECT()
                         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
-                        dropdown_left = r.left + 20
-                        dropdown_top = r.top + 80
-                        dropdown_right = r.right - 20
-                        dropdown_bottom = r.top + 330
-                        # 保存到当前工作目录（兼容 PyInstaller 打包）
+                        win_w = r.right - r.left
                         scr_dir = os.path.join(os.getcwd(), "screenshots")
                         os.makedirs(scr_dir, exist_ok=True)
                         filepath = os.path.join(scr_dir, "dropdown.bmp")
-                        if _screenshot_rect(dropdown_left, dropdown_top, dropdown_right, dropdown_bottom, filepath):
-                            self._gui_log(f"下拉截图已保存: {filepath}")
-                        else:
-                            self._gui_log(f"下拉截图失败: 尺寸无效")
+                        # 截取窗口内部：从 y=80 到 y=330（搜索框+下拉区域）
+                        _screenshot_window(hwnd, 20, 80, win_w - 20, 330, filepath)
+                        self._gui_log(f"下拉截图已保存: {filepath}")
             except Exception as e:
                 if self._gui_log:
                     self._gui_log(f"下拉截图异常: {e}")
@@ -585,11 +632,12 @@ class WeChatController:
 
             # 获取弹窗屏幕位置范围（优先 Win32 API，更可靠）
             popup_rect = None
+            popup_hwnd = None
             try:
-                hwnd = popup.NativeWindowHandle
-                if hwnd:
+                popup_hwnd = popup.NativeWindowHandle
+                if popup_hwnd:
                     rect = ctypes.wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    ctypes.windll.user32.GetWindowRect(popup_hwnd, ctypes.byref(rect))
                     popup_rect = (rect.left, rect.top, rect.right, rect.bottom)
                     _glog(f"弹窗位置(Win32): left={popup_rect[0]} top={popup_rect[1]} "
                           f"right={popup_rect[2]} bottom={popup_rect[3]}")
@@ -603,14 +651,16 @@ class WeChatController:
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
 
-            # 截图弹窗区域
+            # 截图弹窗区域（用 GetWindowDC + 窗口相对坐标）
             if popup_rect:
                 try:
+                    pw = popup_rect[2] - popup_rect[0]
+                    ph = popup_rect[3] - popup_rect[1]
                     scr_dir = os.path.join(os.getcwd(), "screenshots")
                     os.makedirs(scr_dir, exist_ok=True)
                     filepath = os.path.join(scr_dir, "popup.bmp")
-                    _screenshot_rect(popup_rect[0], popup_rect[1], popup_rect[2], popup_rect[3], filepath)
-                    _glog(f"弹窗截图已保存: {filepath} ({popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]})")
+                    _screenshot_window(popup_hwnd, 0, 0, pw, ph, filepath)
+                    _glog(f"弹窗截图已保存: {filepath} ({pw}x{ph})")
                 except Exception as e:
                     _glog(f"弹窗截图失败: {e}")
 
