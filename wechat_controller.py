@@ -479,21 +479,21 @@ class WeChatController:
                     if hwnd:
                         r = ctypes.wintypes.RECT()
                         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
-                        # 下拉菜单在搜索框下方，搜索框大约在窗口顶部 30%~60% 区域
                         dropdown_left = r.left + 20
                         dropdown_top = r.top + 80
                         dropdown_right = r.right - 20
                         dropdown_bottom = r.top + 330
-                        import os as _os
-                        screenshot_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "screenshots")
-                        _os.makedirs(screenshot_dir, exist_ok=True)
-                        filepath = _os.path.join(screenshot_dir, "dropdown.bmp")
-                        _screenshot_rect(dropdown_left, dropdown_top, dropdown_right, dropdown_bottom, filepath)
-                        if self._gui_log:
-                            self._gui_log(f"下拉截图已保存: {filepath} ({dropdown_right-dropdown_left}x{dropdown_bottom-dropdown_top})")
+                        # 保存到当前工作目录（兼容 PyInstaller 打包）
+                        scr_dir = os.path.join(os.getcwd(), "screenshots")
+                        os.makedirs(scr_dir, exist_ok=True)
+                        filepath = os.path.join(scr_dir, "dropdown.bmp")
+                        if _screenshot_rect(dropdown_left, dropdown_top, dropdown_right, dropdown_bottom, filepath):
+                            self._gui_log(f"下拉截图已保存: {filepath}")
+                        else:
+                            self._gui_log(f"下拉截图失败: 尺寸无效")
             except Exception as e:
                 if self._gui_log:
-                    self._gui_log(f"下拉截图失败: {e}")
+                    self._gui_log(f"下拉截图异常: {e}")
 
             # 键盘操作：↑ 往上选"网络查找"，Enter 确认
             _press_key(0x26)  # VK_UP
@@ -607,10 +607,9 @@ class WeChatController:
             # 截图弹窗区域
             if popup_rect:
                 try:
-                    import os as _os
-                    screenshot_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "screenshots")
-                    _os.makedirs(screenshot_dir, exist_ok=True)
-                    filepath = _os.path.join(screenshot_dir, "popup.bmp")
+                    scr_dir = os.path.join(os.getcwd(), "screenshots")
+                    os.makedirs(scr_dir, exist_ok=True)
+                    filepath = os.path.join(scr_dir, "popup.bmp")
                     _screenshot_rect(popup_rect[0], popup_rect[1], popup_rect[2], popup_rect[3], filepath)
                     _glog(f"弹窗截图已保存: {filepath} ({popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]})")
                 except Exception as e:
