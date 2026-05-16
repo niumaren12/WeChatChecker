@@ -256,23 +256,39 @@ def _screenshot_region(left, top, right, bottom):
         return Image.frombytes("RGB", (width, height), sct_img.bgra, "raw", "BGRX")
 
 
+def _silence_tesseract_console():
+    """禁止 tesseract.exe 弹出控制台窗口（会抢焦点导致微信下拉菜单关闭）"""
+    import sys
+    if sys.platform != "win32":
+        return lambda: None  # 非 Windows 无需操作
+    import subprocess
+    _original = subprocess.Popen
+    def _no_window_popen(*args, **kwargs):
+        kwargs.setdefault("creationflags", 0)
+        kwargs["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
+        return _original(*args, **kwargs)
+    subprocess.Popen = _no_window_popen
+    return lambda: setattr(subprocess, "Popen", _original)
+
+
 def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
     """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-
-    # 预处理图像提高识别率
-    processed = _preprocess_for_ocr(image)
-
+    _restore = _silence_tesseract_console()
     try:
-        data = pytesseract.image_to_data(
-            processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
-            config="--psm 6"  # 假设为均匀文本块
-        )
-    except Exception as e:
-        logger.warning(f"Tesseract OCR 失败: {e}")
-        return []
+        # 预处理图像提高识别率
+        processed = _preprocess_for_ocr(image)
+
+        try:
+            data = pytesseract.image_to_data(
+                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+                config="--psm 6"  # 假设为均匀文本块
+            )
+        except Exception as e:
+            logger.warning(f"Tesseract OCR 失败: {e}")
+            return []
 
     scale = 0.5  # 坐标缩放（图片放大了2倍）
     n = len(data["text"])
@@ -377,6 +393,8 @@ def _ocr_find_text(image, target_text, region_left=0, region_top=0, glog=None):
             if glog:
                 glog(f"全文拼接匹配: '{target_text}'")
 
+    finally:
+        _restore()
     return matches
 
 
@@ -385,71 +403,74 @@ def _ocr_contains_text(image, target_text, glog=None):
     import pytesseract
 
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
-
-    processed = _preprocess_for_ocr(image)
-
+    _restore = _silence_tesseract_console()
     try:
-        data = pytesseract.image_to_data(
-            processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
-            config="--psm 6"
-        )
-    except Exception as e:
-        logger.warning(f"Tesseract OCR 失败: {e}")
-        return False
+        processed = _preprocess_for_ocr(image)
 
-    # ---- 第1步：逐条目精确匹配 ----
-    n = len(data["text"])
-    for i in range(n):
-        text = data["text"][i].strip()
-        if target_text in text:
-            return True
+        try:
+            data = pytesseract.image_to_data(
+                processed, lang="chi_sim", output_type=pytesseract.Output.DICT,
+                config="--psm 6"
+            )
+        except Exception as e:
+            logger.warning(f"Tesseract OCR 失败: {e}")
+            return False
 
-    # ---- 第2步：同行拼接回退（CEF字符间距导致单字拆分）----
-    scale = 0.5
-    entries = []
-    for i in range(n):
-        text = data["text"][i].strip()
-        conf = data["conf"][i]
-        if text and conf > 10:
-            x = int(data["left"][i] * scale)
-            y = int(data["top"][i] * scale)
-            entries.append({"text": text, "y": y, "x": x})
-
-    if entries:
-        # 按 Y 分组（容差 10px）
-        entries.sort(key=lambda e: e["y"])
-        rows = []
-        current_row = [entries[0]]
-        for e in entries[1:]:
-            if abs(e["y"] - current_row[-1]["y"]) <= 10:
-                current_row.append(e)
-            else:
-                rows.append(current_row)
-                current_row = [e]
-        rows.append(current_row)
-
-        # 每行按 X 排序后拼接检查
-        for row in rows:
-            row.sort(key=lambda e: e["x"])
-            merged = "".join(e["text"] for e in row)
-            if target_text in merged:
+        # ---- 第1步：逐条目精确匹配 ----
+        n = len(data["text"])
+        for i in range(n):
+            text = data["text"][i].strip()
+            if target_text in text:
                 return True
 
-        # 全文拼接兜底
-        all_entries = []
-        for row in rows:
-            all_entries.extend(row)
-        all_entries.sort(key=lambda e: (e["y"], e["x"]))
-        full_text = "".join(e["text"] for e in all_entries)
-        if target_text in full_text:
-            return True
+        # ---- 第2步：同行拼接回退（CEF字符间距导致单字拆分）----
+        scale = 0.5
+        entries = []
+        for i in range(n):
+            text = data["text"][i].strip()
+            conf = data["conf"][i]
+            if text and conf > 10:
+                x = int(data["left"][i] * scale)
+                y = int(data["top"][i] * scale)
+                entries.append({"text": text, "y": y, "x": x})
 
-    # 未找到时输出诊断信息
-    if glog:
-        all_texts = [t.strip() for t in data["text"] if t.strip()]
-        glog(f"OCR未找到'{target_text}'，识别到的文字({len(all_texts)}条): "
-             f"{' | '.join(all_texts[:20])}")
+        if entries:
+            # 按 Y 分组（容差 10px）
+            entries.sort(key=lambda e: e["y"])
+            rows = []
+            current_row = [entries[0]]
+            for e in entries[1:]:
+                if abs(e["y"] - current_row[-1]["y"]) <= 10:
+                    current_row.append(e)
+                else:
+                    rows.append(current_row)
+                    current_row = [e]
+            rows.append(current_row)
 
+            # 每行按 X 排序后拼接检查
+            for row in rows:
+                row.sort(key=lambda e: e["x"])
+                merged = "".join(e["text"] for e in row)
+                if target_text in merged:
+                    return True
+
+            # 全文拼接兜底
+            all_entries = []
+            for row in rows:
+                all_entries.extend(row)
+            all_entries.sort(key=lambda e: (e["y"], e["x"]))
+            full_text = "".join(e["text"] for e in all_entries)
+            if target_text in full_text:
+                return True
+
+        # 未找到时输出诊断信息
+        if glog:
+            all_texts = [t.strip() for t in data["text"] if t.strip()]
+            glog(f"OCR未找到'{target_text}'，识别到的文字({len(all_texts)}条): "
+                 f"{' | '.join(all_texts[:20])}")
+
+    finally:
+        _restore()
     return False
 
 
