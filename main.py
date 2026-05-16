@@ -215,12 +215,14 @@ class WeChatCheckerApp:
         ttk.Spinbox(
             param_frame, from_=1, to=9999,
             textvariable=self.max_rounds_var, width=6
-        ).pack(side=tk.LEFT, padx=(0, 15))
+        ).pack(side=tk.LEFT)
 
-        # 声音提醒开关
+        # 声音提醒开关（独立一行，保证可见）
+        sound_row = ttk.Frame(config_frame)
+        sound_row.pack(fill=tk.X, pady=(4, 0))
         self.sound_enabled_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            param_frame, text="声音提醒", variable=self.sound_enabled_var
+            sound_row, text="🔊 异常时声音播报", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
 
         # ---- 控制按钮区域 ----

@@ -489,7 +489,19 @@ class WeChatController:
         self.wechat_path = wechat_path
         self.wechat_window = None
         self.main_control = None
-        self._gui_log = None  # GUI 日志回调，由引擎注入
+        self._gui_log = None     # GUI 日志回调，由引擎注入
+        self._stop_event = None  # 停止信号，由引擎注入
+
+    def set_stop_event(self, event):
+        """注入停止信号，用于中断长时间等待"""
+        self._stop_event = event
+
+    def _sleep(self, seconds):
+        """可中断的等待：检查停止信号，被停止时提前返回"""
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return
+        self._stop_event.wait(seconds)
 
     def _emit_log(self, msg, level="info"):
         """同时写 logger 和 GUI 回调（取代各处重复的 _glog 闭包）"""
@@ -632,7 +644,7 @@ class WeChatController:
 
         try:
             _send_hotkey(_VK["ctrl"], _VK["f"])
-            time.sleep(1.5)
+            self._sleep(1.5)
             logger.debug("已按下 Ctrl+F 激活搜索框")
             return True
         except Exception as e:
@@ -688,7 +700,7 @@ class WeChatController:
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
         截图搜索框下方区域 → Tesseract 识别 → 鼠标点击文字中心
         """
-        time.sleep(1.5)
+        self._sleep(1.5)
 
         hwnd = None
         rect = None
@@ -730,7 +742,7 @@ class WeChatController:
                     except Exception:
                         pass
                 _mouse_click(cx, cy)
-                time.sleep(2.0)
+                self._sleep(2.0)
                 return True
             return False
 
@@ -778,7 +790,7 @@ class WeChatController:
 
         try:
             # 等待弹窗出现（CEF 面板加载较慢）
-            time.sleep(2.0)
+            self._sleep(2.0)
 
             # 查找弹窗 — 两级搜索：独立窗口 + 主窗口内面板
             popup = None
@@ -925,19 +937,19 @@ class WeChatController:
         if not self.activate_window():
             return ("error", "无法激活微信窗口")
 
-        time.sleep(0.3)
+        self._sleep(0.3)
 
         # 2. 聚焦搜索框
         if not self.focus_search_box():
             return ("error", "无法聚焦搜索框")
 
-        time.sleep(0.5)
+        self._sleep(0.5)
 
         # 3. 输入微信号
         if not self.input_wechat_id(wechat_id):
             return ("error", "无法输入微信号")
 
-        time.sleep(0.5)
+        self._sleep(0.5)
 
         # 4. 点击下拉项
         if not self.click_dropdown_item():
