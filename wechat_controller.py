@@ -216,37 +216,54 @@ def _screenshot_region(left, top, right, bottom):
 
 def _ocr_find_text(image, target_text, region_left=0, region_top=0):
     """OCR 识别图片，查找目标文字，返回屏幕绝对坐标列表 [(cx, cy, text), ...]"""
-    from winocr import recognize
+    from winocr import recognize_pil_sync
 
     try:
-        result = recognize(image)
+        result = recognize_pil_sync(image)
     except Exception as e:
         logger.warning(f"winocr 识别失败: {e}")
         return []
 
+    # recognize_pil_sync 返回 dict: {'text': ..., 'lines': [{'text':..., 'words':[...]}, ...]}
+    lines = result.get("lines", []) if isinstance(result, dict) else getattr(result, "lines", [])
     matches = []
-    for line in result.lines:
-        if target_text in line.text:
-            cx = region_left + line.bounding_rect.x + line.bounding_rect.width // 2
-            cy = region_top + line.bounding_rect.y + line.bounding_rect.height // 2
-            matches.append((cx, cy, line.text))
+    for line in lines:
+        # line 可能是 dict 或对象
+        line_text = line.get("text", "") if isinstance(line, dict) else getattr(line, "text", "")
+        if target_text in line_text:
+            # 用第一个 word 的 bounding_rect 定位
+            words = line.get("words", []) if isinstance(line, dict) else getattr(line, "words", [])
+            if words:
+                w = words[0]
+                if isinstance(w, dict):
+                    br = w.get("bounding_rect", {})
+                    wx, wy, ww, wh = br.get("x", 0), br.get("y", 0), br.get("width", 0), br.get("height", 0)
+                else:
+                    br = getattr(w, "bounding_rect", None)
+                    if br:
+                        wx, wy, ww, wh = getattr(br, "x", 0), getattr(br, "y", 0), getattr(br, "width", 0), getattr(br, "height", 0)
+                    else:
+                        wx = wy = ww = wh = 0
+                cx = region_left + wx + ww // 2
+                cy = region_top + wy + wh // 2
+            else:
+                cx = cy = 0
+            matches.append((cx, cy, line_text))
     return matches
 
 
 def _ocr_contains_text(image, target_text):
     """OCR 识别图片，检查是否包含目标文字"""
-    from winocr import recognize
+    from winocr import recognize_pil_sync
 
     try:
-        result = recognize(image)
+        result = recognize_pil_sync(image)
     except Exception as e:
         logger.warning(f"winocr 识别失败: {e}")
         return False
 
-    for line in result.lines:
-        if target_text in line.text:
-            return True
-    return False
+    full_text = result.get("text", "") if isinstance(result, dict) else getattr(result, "text", "")
+    return target_text in full_text
 
 
 def _mouse_click(x, y):
@@ -518,9 +535,13 @@ class WeChatController:
 
         # OCR 未找到，记录识别到的所有文字用于调试
         try:
-            from winocr import recognize
-            result = recognize(img)
-            all_text = " | ".join([line.text for line in result.lines[:10]])
+            from winocr import recognize_pil_sync
+            result = recognize_pil_sync(img)
+            lines = result.get("lines", []) if isinstance(result, dict) else getattr(result, "lines", [])
+            all_text = " | ".join([
+                (ln.get("text", "") if isinstance(ln, dict) else getattr(ln, "text", ""))
+                for ln in lines[:10]
+            ])
             logger.warning(f"未找到'网络查找'，OCR识别到的文字: {all_text}")
         except Exception:
             pass
