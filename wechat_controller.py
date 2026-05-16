@@ -202,7 +202,7 @@ _ocr_lang_installed = False  # 是否已尝试安装过中文OCR语言包
 
 
 def _ensure_chinese_ocr():
-    """检查并自动安装 Windows 中文 OCR 语言包（需管理员权限）"""
+    """检查并自动安装 Windows 中文 OCR 语言包（静默，不弹UAC）"""
     global _ocr_lang_installed
     if _ocr_lang_installed:
         return True
@@ -223,17 +223,13 @@ def _ensure_chinese_ocr():
     except Exception:
         pass
 
-    logger.info("中文OCR语言包未安装，尝试自动安装（需管理员权限）...")
+    logger.info("中文OCR语言包未安装，尝试自动安装...")
 
     try:
-        # 用 Start-Process -Verb RunAs 提权安装
-        ps_cmd = (
-            "Start-Process powershell -Verb RunAs -Wait -ArgumentList "
-            "'-NoProfile -Command \"Add-WindowsCapability -Online "
-            "-Name Language.OCR~~~zh-CN~0.0.1.0\"'"
-        )
+        # 直接安装，不加 RunAs（不弹UAC蓝框）
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            ["powershell", "-NoProfile", "-Command",
+             "Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0"],
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
@@ -245,7 +241,7 @@ def _ensure_chinese_ocr():
     except Exception as e:
         logger.warning(f"安装中文OCR语言包异常: {e}")
 
-    logger.error("中文OCR语言包安装失败，请手动以管理员运行: "
+    logger.error("中文OCR语言包安装失败，请以管理员运行powershell执行: "
                   "Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0")
     _ocr_lang_installed = True  # 标记已尝试，不再重试
     return False
@@ -588,6 +584,15 @@ class WeChatController:
         if matches:
             cx, cy, text = matches[0]
             _glog(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+            # 点击前确保微信在前台
+            if self.wechat_window:
+                try:
+                    wh = self.wechat_window.NativeWindowHandle
+                    if wh:
+                        ctypes.windll.user32.SetForegroundWindow(wh)
+                        time.sleep(0.15)
+                except Exception:
+                    pass
             _mouse_click(cx, cy)
             time.sleep(2.0)
             return True
@@ -602,6 +607,14 @@ class WeChatController:
             if matches2:
                 cx, cy, text = matches2[0]
                 _glog(f"OCR(扩区) 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
+                if self.wechat_window:
+                    try:
+                        wh = self.wechat_window.NativeWindowHandle
+                        if wh:
+                            ctypes.windll.user32.SetForegroundWindow(wh)
+                            time.sleep(0.15)
+                    except Exception:
+                        pass
                 _mouse_click(cx, cy)
                 time.sleep(2.0)
                 return True
