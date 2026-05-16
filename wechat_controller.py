@@ -196,6 +196,67 @@ def _type_text(text):
         logger.warning(f"SendInput 发送 {count} 个事件，仅成功 {sent} 个")
 
 
+def _screenshot_rect(left, top, right, bottom, filepath):
+    """用 Win32 GDI 截取屏幕矩形区域，保存为 BMP 文件（零依赖）"""
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return False
+
+    # 获取屏幕 DC
+    hdc_screen = ctypes.windll.user32.GetDC(0)
+    hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_screen)
+    h_bmp = ctypes.windll.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
+    ctypes.windll.gdi32.SelectObject(hdc_mem, h_bmp)
+    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, 0x00CC0020)  # SRCCOPY
+
+    # 获取像素数据
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", ctypes.c_uint), ("biWidth", ctypes.c_int), ("biHeight", ctypes.c_int),
+            ("biPlanes", ctypes.c_ushort), ("biBitCount", ctypes.c_ushort),
+            ("biCompression", ctypes.c_uint), ("biSizeImage", ctypes.c_uint),
+            ("biXPelsPerMeter", ctypes.c_int), ("biYPelsPerMeter", ctypes.c_int),
+            ("biClrUsed", ctypes.c_uint), ("biClrImportant", ctypes.c_uint),
+        ]
+
+    bi = BITMAPINFOHEADER()
+    bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bi.biWidth = width
+    bi.biHeight = height
+    bi.biPlanes = 1
+    bi.biBitCount = 32
+    bi.biCompression = 0  # BI_RGB
+
+    # 分配缓冲区并获取像素
+    buf_size = width * height * 4
+    buf = (ctypes.c_ubyte * buf_size)()
+    ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
+
+    # 写 BMP 文件
+    bmp_header = b'BM'
+    file_size = 54 + buf_size
+    bmp_header += file_size.to_bytes(4, 'little')
+    bmp_header += b'\x00\x00\x00\x00'  # reserved
+    bmp_header += (54).to_bytes(4, 'little')  # data offset
+    bmp_header += bytes(bi)
+    # BMP 是倒序行，反转
+    row_size = width * 4
+    bmp_data = b''
+    for y in range(height - 1, -1, -1):
+        bmp_data += bytes(buf[y * row_size:(y + 1) * row_size])
+
+    with open(filepath, 'wb') as f:
+        f.write(bmp_header)
+        f.write(bmp_data)
+
+    # 清理
+    ctypes.windll.gdi32.DeleteObject(h_bmp)
+    ctypes.windll.gdi32.DeleteDC(hdc_mem)
+    ctypes.windll.user32.ReleaseDC(0, hdc_screen)
+    return True
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -402,7 +463,7 @@ class WeChatController:
     def click_dropdown_item(self):
         """
         选择搜索下拉框中的'网络查找手机/QQ号'项
-        先诊断下拉菜单的位置大小，然后键盘 ↑+Enter
+        截图下拉区域 → 键盘 ↑+Enter
         """
         if not UIA_AVAILABLE:
             return False
@@ -411,46 +472,28 @@ class WeChatController:
             # 等待搜索结果下拉列表出现
             time.sleep(1.5)
 
-            # 诊断：扫描桌面所有顶层窗口及其直接子窗口，找可能是下拉菜单的控件
-            _glog = self._gui_log
+            # 截图下拉菜单区域（微信窗口内搜索框下方约 300x250 像素）
             try:
-                wechat_rect = None
                 if self.wechat_window:
                     hwnd = self.wechat_window.NativeWindowHandle
                     if hwnd:
                         r = ctypes.wintypes.RECT()
                         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
-                        wechat_rect = (r.left, r.top, r.right, r.bottom)
-
-                candidates = []
-                for top in auto.GetRootControl().GetChildren():
-                    # 只看顶层控件：WindowControl, PopupControl, PaneControl 等
-                    try:
-                        ttype = type(top).__name__
-                        tname = top.Name
-                        trect = top.BoundingRectangle
-                        tw, th = trect[2] - trect[0], trect[3] - trect[1]
-                        # 筛选：大小合理（非全屏、非极小）+ 在微信窗口附近或内部
-                        near_wechat = True
-                        if wechat_rect:
-                            near_wechat = (trect[0] >= wechat_rect[0] - 100 and
-                                           trect[2] <= wechat_rect[2] + 100)
-                        if 50 < tw < 800 and 30 < th < 600 and near_wechat:
-                            candidates.append((ttype, tname, trect, tw, th))
-                    except Exception:
-                        pass
-
-                if _glog:
-                    _glog(f"=== 下拉诊断: 微信窗口@{wechat_rect}, 候选控件{len(candidates)}个 ===")
-                    for ct, nm, cr, w, h in candidates:
-                        _glog(f"  {ct} [{nm}] pos=({cr[0]},{cr[1]}) size={w}x{h}")
-                    _glog("=== 下拉诊断结束 ===")
-                else:
-                    for ct, nm, cr, w, h in candidates:
-                        logger.info(f"下拉候选: {ct} [{nm}] pos=({cr[0]},{cr[1]}) size={w}x{h}")
+                        # 下拉菜单在搜索框下方，搜索框大约在窗口顶部 30%~60% 区域
+                        dropdown_left = r.left + 20
+                        dropdown_top = r.top + 80
+                        dropdown_right = r.right - 20
+                        dropdown_bottom = r.top + 330
+                        import os as _os
+                        screenshot_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "screenshots")
+                        _os.makedirs(screenshot_dir, exist_ok=True)
+                        filepath = _os.path.join(screenshot_dir, "dropdown.bmp")
+                        _screenshot_rect(dropdown_left, dropdown_top, dropdown_right, dropdown_bottom, filepath)
+                        if self._gui_log:
+                            self._gui_log(f"下拉截图已保存: {filepath} ({dropdown_right-dropdown_left}x{dropdown_bottom-dropdown_top})")
             except Exception as e:
-                if _glog:
-                    _glog(f"下拉诊断异常: {e}")
+                if self._gui_log:
+                    self._gui_log(f"下拉截图失败: {e}")
 
             # 键盘操作：↑ 往上选"网络查找"，Enter 确认
             _press_key(0x26)  # VK_UP
@@ -560,6 +603,18 @@ class WeChatController:
                     _glog(f"弹窗位置(UIA): {popup_rect}")
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
+
+            # 截图弹窗区域
+            if popup_rect:
+                try:
+                    import os as _os
+                    screenshot_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "screenshots")
+                    _os.makedirs(screenshot_dir, exist_ok=True)
+                    filepath = _os.path.join(screenshot_dir, "popup.bmp")
+                    _screenshot_rect(popup_rect[0], popup_rect[1], popup_rect[2], popup_rect[3], filepath)
+                    _glog(f"弹窗截图已保存: {filepath} ({popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]})")
+                except Exception as e:
+                    _glog(f"弹窗截图失败: {e}")
 
             # 从桌面根控件全局遍历，筛选弹窗范围内的控件
             found_ctrls = []  # (ctrl_type, name, rect)
