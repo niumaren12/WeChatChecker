@@ -1,5 +1,5 @@
 {
-  "wechat_path": "C:\\Program Files (x86)\\Tencent\\WeChat\\WeChat.exe",
+  "wechat_path": "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe",
   "ids_file": "wechat_ids.txt",
   "batch_size": 9,
   "batch_interval_min": 30,

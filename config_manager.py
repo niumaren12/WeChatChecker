@@ -9,7 +9,7 @@ from logger_setup import logger
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 DEFAULT_CONFIG = {
-    "wechat_path": r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe",
+    "wechat_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",
     "ids_file": "wechat_ids.txt",
     "batch_size": 9,
     "batch_interval_min": 30,

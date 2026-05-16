@@ -119,6 +119,43 @@ class CheckerEngine:
         thread.start()
         self._emit_log(f"检查启动，共 {len(ids)} 个微信号")
 
+    def start_with_ids(self, ids_list):
+        """
+        用微信号列表直接启动检查（不读文件）
+
+        Args:
+            ids_list: 微信号字符串列表
+        """
+        if self._running:
+            self._emit_log("检查已在运行中", "warn")
+            return
+        if not ids_list:
+            self._emit_log("微信号列表为空", "error")
+            return
+
+        self._running = True
+        self._stop_event.clear()
+        self.total_accounts = len(ids_list)
+        self.checked_accounts = []
+
+        config_snapshot = {
+            "batch_size": self.config.get("batch_size", 9),
+            "batch_interval_min": self.config.get("batch_interval_min", 30),
+            "batch_interval_max": self.config.get("batch_interval_max", 50),
+            "account_interval_min": self.config.get("account_interval_min", 3),
+            "account_interval_max": self.config.get("account_interval_max", 5),
+            "max_rounds": self.config.get("max_rounds", 100),
+        }
+
+        thread = threading.Thread(
+            target=self._run_check_loop,
+            args=(ids_list, config_snapshot),
+            daemon=True,
+            name="CheckerThread",
+        )
+        thread.start()
+        self._emit_log(f"检查启动，共 {len(ids_list)} 个微信号")
+
     def _run_check_loop(self, all_ids, cfg):
         """
         主检查循环（在子线程中运行）

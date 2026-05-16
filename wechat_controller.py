@@ -289,7 +289,7 @@ class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
     # 微信进程名
-    WECHAT_PROCESS = "WeChat.exe"
+    WECHAT_PROCESS = "Weixin.exe"
     # 微信主窗口标题可能包含的文字
     WECHAT_WINDOW_TITLE = "微信"
 
@@ -747,5 +747,5 @@ class WeChatController:
 # ==================== 测试入口 ====================
 if __name__ == "__main__":
     # 测试用
-    ctrl = WeChatController(r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe")
+    ctrl = WeChatController(r"C:\Program Files\Tencent\Weixin\Weixin.exe")
     print(f"微信运行中: {ctrl.is_wechat_running()}")

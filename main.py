@@ -5,7 +5,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
-import os
 import sys
 
 from config_manager import ConfigManager
@@ -32,8 +31,8 @@ class WeChatCheckerApp:
         # 创建主窗口
         self.root = tk.Tk()
         self.root.title(f"{self.APP_NAME} {self.APP_VERSION}")
-        self.root.geometry("720x620")
-        self.root.minsize(640, 560)
+        self.root.geometry("720x720")
+        self.root.minsize(640, 660)
 
         # 设置图标（内置 Base64 图标）
         self._set_icon()
@@ -111,15 +110,43 @@ class WeChatCheckerApp:
         ttk.Button(path_row, text="浏览", width=6,
                    command=self._browse_wechat_path).pack(side=tk.RIGHT)
 
-        # 微信号列表文件
-        ids_row = ttk.Frame(config_frame)
-        ids_row.pack(fill=tk.X, pady=3)
-        ttk.Label(ids_row, text="微信号文件:", width=12).pack(side=tk.LEFT)
-        self.ids_file_var = tk.StringVar()
-        ids_entry = ttk.Entry(ids_row, textvariable=self.ids_file_var)
-        ids_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(ids_row, text="选择", width=6,
-                   command=self._browse_ids_file).pack(side=tk.RIGHT)
+        # ---- 微信号列表区域 ----
+        ids_frame = ttk.LabelFrame(main_frame, text="微信号列表", padding=6)
+        ids_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        # Listbox + 滚动条
+        listbox_frame = ttk.Frame(ids_frame)
+        listbox_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.ids_listbox = tk.Listbox(
+            listbox_frame, height=6, selectmode=tk.EXTENDED,
+            font=("Consolas", 9), bg="#f5f5f5", relief=tk.SUNKEN,
+        )
+        ids_scrollbar = ttk.Scrollbar(listbox_frame, command=self.ids_listbox.yview)
+        self.ids_listbox.config(yscrollcommand=ids_scrollbar.set)
+        self.ids_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ids_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 添加行：输入框 + 添加按钮
+        add_row = ttk.Frame(ids_frame)
+        add_row.pack(fill=tk.X, pady=(4, 2))
+
+        self.new_id_var = tk.StringVar()
+        add_entry = ttk.Entry(add_row, textvariable=self.new_id_var)
+        add_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        add_entry.bind("<Return>", lambda e: self._add_wechat_id())
+        ttk.Button(add_row, text="添加", width=6,
+                   command=self._add_wechat_id).pack(side=tk.RIGHT)
+
+        # 操作按钮行
+        btn_row = ttk.Frame(ids_frame)
+        btn_row.pack(fill=tk.X)
+        ttk.Button(btn_row, text="删除选中", width=10,
+                   command=self._delete_selected_id).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(btn_row, text="从文件导入...", width=12,
+                   command=self._import_ids_from_file).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(btn_row, text="清空", width=6,
+                   command=self._clear_all_ids).pack(side=tk.LEFT)
 
         # 参数行
         param_frame = ttk.Frame(config_frame)
@@ -246,18 +273,18 @@ class WeChatCheckerApp:
     def _load_config_to_ui(self):
         """将配置文件内容加载到界面控件"""
         self.wechat_path_var.set(self.config.get("wechat_path", ""))
-        self.ids_file_var.set(self.config.get("ids_file", ""))
         self.batch_size_var.set(str(self.config.get("batch_size", 9)))
         self.bi_min_var.set(str(self.config.get("batch_interval_min", 30)))
         self.bi_max_var.set(str(self.config.get("batch_interval_max", 50)))
         self.ai_min_var.set(str(self.config.get("account_interval_min", 3)))
         self.ai_max_var.set(str(self.config.get("account_interval_max", 5)))
         self.max_rounds_var.set(str(self.config.get("max_rounds", 100)))
+        # 从文件加载微信号列表到界面
+        self._load_ids_to_listbox()
 
     def _save_ui_to_config(self):
         """将界面值写入配置文件"""
         self.config.set("wechat_path", self.wechat_path_var.get().strip())
-        self.config.set("ids_file", self.ids_file_var.get().strip())
 
         try:
             self.config.set("batch_size", int(self.batch_size_var.get()))
@@ -291,15 +318,94 @@ class WeChatCheckerApp:
             self.wechat_path_var.set(path)
             self._save_ui_to_config()
 
-    def _browse_ids_file(self):
-        """浏览选择微信号列表文件"""
+    # ==================== 微信号列表管理 ====================
+
+    def _load_ids_to_listbox(self):
+        """从 wechat_ids.txt 加载微信号到 Listbox"""
+        ids_file = self.config.get("ids_file", "wechat_ids.txt")
+        ids, _ = ConfigManager.load_ids(ids_file)
+        self.ids_listbox.delete(0, tk.END)
+        for wid in ids:
+            self.ids_listbox.insert(tk.END, wid)
+
+    def _save_ids_to_file(self):
+        """将 Listbox 中的微信号保存到文件"""
+        ids = list(self.ids_listbox.get(0, tk.END))
+        ids_file = self.config.get("ids_file", "wechat_ids.txt")
+        try:
+            with open(ids_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(ids))
+        except IOError as e:
+            logger.error(f"保存微信号列表失败: {e}")
+
+    def _add_wechat_id(self):
+        """添加新微信号到列表"""
+        new_id = self.new_id_var.get().strip()
+        if not new_id:
+            return
+        # 去重
+        current_ids = list(self.ids_listbox.get(0, tk.END))
+        if new_id in current_ids:
+            messagebox.showinfo("提示", f"微信号 {new_id} 已存在", parent=self.root)
+            return
+        self.ids_listbox.insert(tk.END, new_id)
+        self.new_id_var.set("")
+        self._save_ids_to_file()
+
+    def _delete_selected_id(self):
+        """删除选中的微信号"""
+        selected = self.ids_listbox.curselection()
+        if not selected:
+            return
+        # 从后往前删，避免索引偏移
+        for idx in reversed(selected):
+            self.ids_listbox.delete(idx)
+        self._save_ids_to_file()
+
+    def _clear_all_ids(self):
+        """清空全部微信号"""
+        if not self.ids_listbox.size():
+            return
+        if not messagebox.askyesno(
+            "确认清空",
+            "确定要清空所有微信号吗？",
+            parent=self.root,
+        ):
+            return
+        self.ids_listbox.delete(0, tk.END)
+        self._save_ids_to_file()
+
+    def _import_ids_from_file(self):
+        """从文件导入微信号（合并去重）"""
         path = filedialog.askopenfilename(
             title="选择微信号列表文件",
             filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
         )
-        if path:
-            self.ids_file_var.set(path)
-            self._save_ui_to_config()
+        if not path:
+            return
+
+        ids, err = ConfigManager.load_ids(path)
+        if err:
+            messagebox.showwarning("导入失败", err, parent=self.root)
+            return
+        if not ids:
+            messagebox.showinfo("提示", "文件中没有有效的微信号", parent=self.root)
+            return
+
+        current = set(self.ids_listbox.get(0, tk.END))
+        added = 0
+        for wid in ids:
+            if wid not in current:
+                self.ids_listbox.insert(tk.END, wid)
+                current.add(wid)
+                added += 1
+
+        self._save_ids_to_file()
+        logger.info(f"从 {path} 导入 {added} 个新微信号，跳过 {len(ids) - added} 个重复")
+
+    def _get_ids_list(self):
+        """获取当前列表中的微信号"""
+        return list(self.ids_listbox.get(0, tk.END))
 
     # ==================== 引擎回调 ====================
 
@@ -388,12 +494,12 @@ class WeChatCheckerApp:
             messagebox.showwarning("配置错误", err, parent=self.root)
             return
 
-        # 检查微信号文件是否存在
-        ids_file = self.config.get("ids_file", "")
-        if not os.path.exists(ids_file):
+        # 获取微信号列表
+        ids = self._get_ids_list()
+        if not ids:
             messagebox.showwarning(
-                "文件不存在",
-                f"微信号列表文件不存在: {ids_file}\n请先创建该文件。",
+                "列表为空",
+                "微信号列表为空，请先添加微信号。",
                 parent=self.root,
             )
             return
@@ -411,7 +517,7 @@ class WeChatCheckerApp:
 
         # 启动检查
         logger.info("用户点击开始检查")
-        self.engine.start(ids_file)
+        self.engine.start_with_ids(ids)
 
     def _stop_check(self):
         """停止检查"""

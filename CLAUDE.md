@@ -24,15 +24,15 @@ build_exe.bat                     # 打包为 exe
 
 ```
 main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
-  ├── checker_engine.py # 检查引擎（CheckerEngine）— 子线程循环/批次/进度
+  ├── checker_engine.py # 检查引擎（CheckerEngine）— 子线程循环/批次/进度，start_with_ids() 接收列表
   │   └── wechat_controller.py  # 微信自动化（WeChatController）
   ├── config_manager.py # 配置读写（config.json）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 ```
 
-**数据流**: GUI → `CheckerEngine.start()` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → ↑ 选下拉项 → Enter 打开面板 → 三级弹窗搜索定位 → GDI 像素截取检测按钮（灰底+黑字）→ 回调 GUI。
+**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → ↑ 选下拉项 → Enter 打开面板 → 三级弹窗搜索定位 → GDI 像素截取检测按钮（灰底+黑字）→ 回调 GUI。
 
-## 关键：微信 PC 4.x 是 CEF/Chromium 应用
+## 关键：微信 PC 4.x 是 CEF/Chromium 应用（进程名 Weixin.exe）
 
 **uiautomation 看不到 CEF 内部的控件**（头像、昵称、文本标签等 Web 渲染元素不可见）。因此：
 
@@ -81,7 +81,8 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 ## 配置文件
 
 - `config.json`: 微信路径、批次参数、间隔、max_rounds
-- `wechat_ids.txt`: 每行一个微信号，`#` 注释，自动去重
+- `wechat_ids.txt`: 微信号列表（GUI 内增删改，自动同步到此文件，不再手动编辑）
+- 微信号管理已内置到 GUI（Listbox + 添加/删除/导入/清空），引擎通过 `start_with_ids()` 接收列表
 
 ## CI/CD
 
