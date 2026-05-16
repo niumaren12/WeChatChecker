@@ -22,6 +22,7 @@ a = Analysis(
         'pytesseract',
         'psutil',
         'uiautomation',
+        'telegram_notifier',
     ],
     hookspath=['hooks'],
     hooksconfig={},

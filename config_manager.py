@@ -18,6 +18,18 @@ DEFAULT_CONFIG = {
     "account_interval_max": 5,
     "max_rounds": 100,
     "sound_enabled": True,
+
+    # Telegram 通知配置
+    "telegram_enabled": False,
+    "telegram_message_template": (
+        "🚨 异常账号告警\n"
+        "\n"
+        "微信号: {wechat_id}\n"
+        "异常原因: {reason}\n"
+        "检查时间: {timestamp}\n"
+        "\n"
+        "来自: 微信账号检查工具"
+    ),
 }
 
 

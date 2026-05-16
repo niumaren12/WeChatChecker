@@ -21,6 +21,7 @@ class AbnormalEntry:
     wechat_id: str
     reason: str
     timestamp: float
+    telegram_sent: bool | None = None  # True=通知成功, False=通知失败, None=未启用
 
 
 class WeChatCheckerApp:
@@ -225,6 +226,23 @@ class WeChatCheckerApp:
             sound_row, text="🔊 异常时声音播报", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
 
+        # Telegram 通知开关
+        telegram_row = ttk.Frame(config_frame)
+        telegram_row.pack(fill=tk.X, pady=(2, 0))
+        self.telegram_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            telegram_row, text="📨 Telegram 异常通知", variable=self.telegram_enabled_var
+        ).pack(side=tk.LEFT)
+        self.telegram_test_btn = ttk.Button(
+            telegram_row, text="🔄 测试", width=6,
+            command=self._on_test_telegram,
+        )
+        self.telegram_test_btn.pack(side=tk.LEFT, padx=(8, 4))
+        self.telegram_status_label = ttk.Label(
+            telegram_row, text="", foreground="#666666", font=("微软雅黑", 8)
+        )
+        self.telegram_status_label.pack(side=tk.LEFT)
+
         # ---- 控制按钮区域 ----
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 8))
@@ -376,6 +394,7 @@ class WeChatCheckerApp:
         self.ai_max_var.set(str(self.config.get("account_interval_max", 5)))
         self.max_rounds_var.set(str(self.config.get("max_rounds", 100)))
         self.sound_enabled_var.set(self.config.get("sound_enabled", True))
+        self.telegram_enabled_var.set(self.config.get("telegram_enabled", False))
         # 从文件加载微信号列表到界面
         self._load_ids_to_listbox()
 
@@ -406,6 +425,7 @@ class WeChatCheckerApp:
             pass
 
         self.config.set("sound_enabled", self.sound_enabled_var.get())
+        self.config.set("telegram_enabled", self.telegram_enabled_var.get())
 
     def _browse_wechat_path(self):
         """浏览选择微信可执行文件"""
@@ -528,7 +548,7 @@ class WeChatCheckerApp:
                 )
         self.root.after(0, update)
 
-    def _on_engine_abnormal(self, wechat_id, reason):
+    def _on_engine_abnormal(self, wechat_id, reason, telegram_sent=None):
         """
         引擎异常回调（在检查线程中被调用）
         非阻塞：注册异常信息，调度 GUI 更新和声音警报，检查继续。
@@ -537,6 +557,7 @@ class WeChatCheckerApp:
             wechat_id=wechat_id,
             reason=reason,
             timestamp=_time.time(),
+            telegram_sent=telegram_sent,
         )
         with self._abnormal_lock:
             self._abnormal_dict[wechat_id] = entry
@@ -596,6 +617,25 @@ class WeChatCheckerApp:
                 side=tk.LEFT, fill=tk.X, expand=True,
                 padx=(6, 4), pady=2
             )
+
+            # 通知状态标签
+            if entry.telegram_sent is True:
+                tg_text = "✅ 已通知"
+                tg_fg = "#2e7d32"
+            elif entry.telegram_sent is False:
+                tg_text = "❌ 发送失败"
+                tg_fg = "#c62828"
+            else:
+                tg_text = "—"
+                tg_fg = "#999999"
+            tg_label = tk.Label(
+                row_frame,
+                text=tg_text,
+                bg="#ffe0e0",
+                fg=tg_fg,
+                font=("微软雅黑", 8),
+            )
+            tg_label.pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
             # 右侧：已修复按钮
             fix_btn = tk.Button(
@@ -676,6 +716,32 @@ class WeChatCheckerApp:
         self.stop_sound_btn.configure(
             state=tk.DISABLED, text="🔇 声音已停"
         )
+
+    def _on_test_telegram(self):
+        """发送 Telegram 测试消息，验证 Bot Token 和 Chat ID 配置。"""
+        self.telegram_test_btn.configure(state=tk.DISABLED, text="...")
+        self.telegram_status_label.configure(text="发送中...", foreground="#666666")
+
+        def _do_test():
+            from telegram_notifier import TelegramNotifier
+            notifier = TelegramNotifier(enabled=True)
+            ok, msg = notifier.send_test_notification()
+
+            def _update_ui():
+                if ok:
+                    self.telegram_status_label.configure(
+                        text="✓ 发送成功", foreground="#2e7d32"
+                    )
+                else:
+                    self.telegram_status_label.configure(
+                        text=f"✗ {msg}", foreground="#c62828"
+                    )
+                self.telegram_test_btn.configure(
+                    state=tk.NORMAL, text="🔄 测试"
+                )
+            self.root.after(0, _update_ui)
+
+        threading.Thread(target=_do_test, daemon=True).start()
 
     def _append_log_immediate(self, msg):
         """立即写入日志区（绕过缓冲区，用于关键错误提示）"""

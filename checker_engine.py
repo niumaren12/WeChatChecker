@@ -9,6 +9,7 @@ import random
 from logger_setup import logger
 from config_manager import ConfigManager
 from wechat_controller import WeChatController
+from telegram_notifier import TelegramNotifier
 
 
 class CheckerEngine:
@@ -27,11 +28,16 @@ class CheckerEngine:
         self._stop_event = threading.Event()
         self.wechat.set_stop_event(self._stop_event)  # 注入停止信号
 
+        # Telegram 通知器
+        self._telegram_notifier = TelegramNotifier(
+            enabled=config_mgr.get("telegram_enabled", False)
+        )
+
         # 回调函数（供 GUI 使用）
         self.on_log = None           # func(msg)
         self.on_status = None        # func(status_text)
         self.on_progress = None      # func(current, total, batch_info)
-        self.on_abnormal = None      # func(wechat_id, reason) — 非阻塞通知，不返回值
+        self.on_abnormal = None      # func(wechat_id, reason, telegram_sent)
 
         # 当前检查进度
         self.current_batch = 0
@@ -106,6 +112,7 @@ class CheckerEngine:
         self.checked_accounts = []
 
         config_snapshot = self._build_config_snapshot()
+        self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
 
         # 在子线程中运行检查
         try:
@@ -143,6 +150,7 @@ class CheckerEngine:
         self.checked_accounts = []
 
         config_snapshot = self._build_config_snapshot()
+        self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
 
         try:
             thread = threading.Thread(
@@ -247,9 +255,13 @@ class CheckerEngine:
                             self._emit_log(
                                 f"[异常] {wechat_id}: {detail}", "warn"
                             )
-                            # 非阻塞通知 GUI，继续检查其他账号
+                            # 发送 Telegram 通知
+                            telegram_sent = self._telegram_notifier.send_abnormal_notification(
+                                wechat_id, detail
+                            )
+                            # 非阻塞通知 GUI，含通知状态
                             if self.on_abnormal:
-                                self.on_abnormal(wechat_id, detail)
+                                self.on_abnormal(wechat_id, detail, telegram_sent)
                         elif status == "success":
                             self._emit_log(
                                 f"[正常] {wechat_id}: {detail}", "info"
