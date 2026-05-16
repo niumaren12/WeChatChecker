@@ -6,11 +6,21 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import sys
+import time as _time
+from dataclasses import dataclass
 
 from config_manager import ConfigManager
 from checker_engine import CheckerEngine
 from logger_setup import logger
 import wechat_controller  # 确保 PyInstaller 打包此模块
+
+
+@dataclass
+class AbnormalEntry:
+    """异常账号记录，用于通知面板展示"""
+    wechat_id: str
+    reason: str
+    timestamp: float
 
 
 class WeChatCheckerApp:
@@ -29,11 +39,17 @@ class WeChatCheckerApp:
         self.engine.on_progress = self._on_engine_progress
         self.engine.on_abnormal = self._on_engine_abnormal
 
+        # 异常账号追踪（线程安全）
+        self._abnormal_lock = threading.Lock()
+        self._abnormal_dict: dict[str, AbnormalEntry] = {}
+        self._sound_muted = False
+        self._beep_after_id: str | None = None
+
         # 创建主窗口
         self.root = tk.Tk()
         self.root.title(f"{self.APP_NAME} {self.APP_VERSION}")
-        self.root.geometry("720x720")
-        self.root.minsize(640, 660)
+        self.root.geometry("720x820")
+        self.root.minsize(640, 760)
 
         # 设置图标（内置 Base64 图标）
         self._set_icon()
@@ -234,6 +250,73 @@ class WeChatCheckerApp:
         self.progress_label = ttk.Label(progress_frame, text="", width=16)
         self.progress_label.pack(side=tk.RIGHT, padx=(8, 0))
 
+        # ---- 异常通知面板 ----
+        self.abnormal_frame = ttk.LabelFrame(
+            main_frame, text="⚠ 异常账号 (0)", padding=4
+        )
+        self.abnormal_frame.pack(fill=tk.X, pady=(0, 6))
+
+        abnormal_canvas_frame = ttk.Frame(self.abnormal_frame)
+        abnormal_canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.abnormal_canvas = tk.Canvas(
+            abnormal_canvas_frame,
+            height=100,
+            bg="#f0f0f0",
+            highlightthickness=0,
+        )
+        abnormal_scrollbar = ttk.Scrollbar(
+            abnormal_canvas_frame,
+            orient=tk.VERTICAL,
+            command=self.abnormal_canvas.yview,
+        )
+        self.abnormal_canvas.configure(yscrollcommand=abnormal_scrollbar.set)
+        self.abnormal_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        abnormal_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 内部容器帧（所有异常条目在此帧内）
+        self.abnormal_inner = ttk.Frame(self.abnormal_canvas)
+        self.abnormal_inner_id = self.abnormal_canvas.create_window(
+            (0, 0), window=self.abnormal_inner, anchor=tk.NW
+        )
+
+        # 让内部帧宽度跟随 Canvas
+        def _on_abnormal_canvas_configure(event):
+            self.abnormal_canvas.itemconfig(
+                self.abnormal_inner_id, width=event.width
+            )
+        self.abnormal_canvas.bind("<Configure>", _on_abnormal_canvas_configure)
+
+        # 更新 scrollregion
+        def _on_abnormal_inner_configure(event):
+            self.abnormal_canvas.configure(
+                scrollregion=self.abnormal_canvas.bbox("all")
+            )
+        self.abnormal_inner.bind("<Configure>", _on_abnormal_inner_configure)
+
+        # 鼠标滚轮支持
+        def _on_abnormal_mousewheel(event):
+            self.abnormal_canvas.yview_scroll(
+                int(-1 * (event.delta / 120)), "units"
+            )
+        self.abnormal_canvas.bind("<MouseWheel>", _on_abnormal_mousewheel)
+
+        # 底部控制栏
+        abnormal_ctrl = ttk.Frame(self.abnormal_frame)
+        abnormal_ctrl.pack(fill=tk.X, pady=(4, 0))
+
+        self.stop_sound_btn = ttk.Button(
+            abnormal_ctrl, text="🔇 停止声音", width=14,
+            command=self._on_stop_sound, state=tk.DISABLED,
+        )
+        self.stop_sound_btn.pack(side=tk.LEFT)
+
+        self.abnormal_count_label = ttk.Label(
+            abnormal_ctrl, text="", foreground="#cc3333",
+            font=("微软雅黑", 9, "bold"),
+        )
+        self.abnormal_count_label.pack(side=tk.RIGHT)
+
         # ---- 日志区域 ----
         log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding=4)
         log_frame.pack(fill=tk.BOTH, expand=True)
@@ -243,7 +326,7 @@ class WeChatCheckerApp:
 
         self.log_text = tk.Text(
             log_text_frame,
-            height=14,
+            height=10,
             wrap=tk.WORD,
             font=("Consolas", 9),
             bg="#1e1e1e",
@@ -433,34 +516,144 @@ class WeChatCheckerApp:
     def _on_engine_abnormal(self, wechat_id, reason):
         """
         引擎异常回调（在检查线程中被调用）
-        弹窗提示用户，超时 60 秒无人操作则自动停止
-        返回 True 表示停止检查
+        非阻塞：注册异常信息，调度 GUI 更新和声音警报，检查继续。
         """
-        event = threading.Event()
+        entry = AbnormalEntry(
+            wechat_id=wechat_id,
+            reason=reason,
+            timestamp=_time.time(),
+        )
+        with self._abnormal_lock:
+            self._abnormal_dict[wechat_id] = entry
 
-        def show_alert():
-            msg = (
-                f"检测到异常微信号！\n\n"
-                f"微信号: {wechat_id}\n"
-                f"异常原因: {reason}\n\n"
-                f"请及时处理！"
+        self.root.after(0, self._refresh_abnormal_panel)
+        self.root.after(0, self._ensure_beeping)
+
+    # ==================== 异常通知面板方法 ====================
+
+    def _refresh_abnormal_panel(self):
+        """重建异常通知面板内容（必须在主线程调用）。"""
+        for widget in self.abnormal_inner.winfo_children():
+            widget.destroy()
+
+        with self._abnormal_lock:
+            entries = list(self._abnormal_dict.values())
+            count = len(entries)
+
+        self.abnormal_frame.configure(text=f"⚠ 异常账号 ({count})")
+
+        if count == 0:
+            self.abnormal_count_label.configure(text="")
+            self.abnormal_canvas.configure(bg="#f0f0f0")
+            self._sound_muted = False
+            self.stop_sound_btn.configure(
+                state=tk.DISABLED, text="🔇 停止声音"
             )
-            # 播放警告音
-            try:
-                import winsound; winsound.MessageBeep(winsound.MB_ICONHAND)
-            except Exception:
-                pass
+            self._stop_beep()
+            return
 
-            messagebox.showerror(
-                "⚠ 账号异常警告",
-                msg,
-                parent=self.root,
+        self.abnormal_canvas.configure(bg="#fff0f0")
+        self.abnormal_count_label.configure(
+            text=f"共 {count} 个异常账号待处理"
+        )
+
+        # 按时间倒序（最新的在前）
+        entries.sort(key=lambda e: e.timestamp, reverse=True)
+
+        for entry in entries:
+            row_frame = tk.Frame(
+                self.abnormal_inner,
+                bg="#ffe0e0",
+                relief=tk.GROOVE,
+                borderwidth=1,
             )
-            event.set()
+            row_frame.pack(fill=tk.X, pady=1, padx=2)
 
-        self.root.after(0, show_alert)
-        event.wait()  # 阻塞等待用户手动关闭弹窗，确保人看到异常
-        return True  # 异常时总是停止检查
+            # 左侧：异常图标 + 微信号 + 原因
+            info_label = tk.Label(
+                row_frame,
+                text=f"⚠ {entry.wechat_id}  —  {entry.reason}",
+                bg="#ffe0e0",
+                fg="#cc0000",
+                font=("微软雅黑", 9, "bold"),
+                anchor=tk.W,
+            )
+            info_label.pack(
+                side=tk.LEFT, fill=tk.X, expand=True,
+                padx=(6, 4), pady=2
+            )
+
+            # 右侧：已修复按钮
+            fix_btn = tk.Button(
+                row_frame,
+                text="已修复",
+                bg="#4caf50",
+                fg="white",
+                font=("微软雅黑", 8),
+                relief=tk.RAISED,
+                borderwidth=1,
+                padx=8,
+                command=lambda wid=entry.wechat_id: self._on_mark_fixed(wid),
+            )
+            fix_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=2)
+
+        # 更新 Canvas 滚动区域
+        self.abnormal_inner.update_idletasks()
+        self.abnormal_canvas.configure(
+            scrollregion=self.abnormal_canvas.bbox("all")
+        )
+
+    def _on_mark_fixed(self, wechat_id):
+        """用户点击'已修复'按钮，清除该异常通知。"""
+        with self._abnormal_lock:
+            self._abnormal_dict.pop(wechat_id, None)
+
+        self._refresh_abnormal_panel()
+        logger.info(f"用户标记 {wechat_id} 已修复")
+
+    def _ensure_beeping(self):
+        """确保声音警报正在播放（必须在主线程调用）。"""
+        if self._sound_muted:
+            return
+        self.stop_sound_btn.configure(state=tk.NORMAL, text="🔇 停止声音")
+        if self._beep_after_id is not None:
+            return  # 已在蜂鸣中
+        self._beep_loop()
+
+    def _beep_loop(self):
+        """播放一声短促警报，然后调度下一次（必须在主线程调用）。"""
+        if self._sound_muted:
+            self._beep_after_id = None
+            return
+
+        with self._abnormal_lock:
+            has_abnormal = len(self._abnormal_dict) > 0
+
+        if not has_abnormal:
+            self._beep_after_id = None
+            return
+
+        try:
+            import winsound
+            winsound.Beep(1000, 200)  # 1000Hz, 200ms
+        except Exception:
+            pass
+
+        self._beep_after_id = self.root.after(1500, self._beep_loop)
+
+    def _stop_beep(self):
+        """停止声音警报循环。"""
+        if self._beep_after_id is not None:
+            self.root.after_cancel(self._beep_after_id)
+            self._beep_after_id = None
+
+    def _on_stop_sound(self):
+        """用户点击'停止声音'按钮。"""
+        self._sound_muted = True
+        self._stop_beep()
+        self.stop_sound_btn.configure(
+            state=tk.DISABLED, text="🔇 声音已停"
+        )
 
     # ==================== UI 更新方法 ====================
 
@@ -516,6 +709,13 @@ class WeChatCheckerApp:
         self.progress_var.set(0)
         self.progress_label.config(text="")
 
+        # 重置异常通知状态
+        with self._abnormal_lock:
+            self._abnormal_dict.clear()
+        self._sound_muted = False
+        self.stop_sound_btn.configure(state=tk.DISABLED, text="🔇 停止声音")
+        self._refresh_abnormal_panel()
+
         # 启动检查
         logger.info("用户点击开始检查")
         self.engine.start_with_ids(ids)
@@ -528,6 +728,7 @@ class WeChatCheckerApp:
 
     def _on_close(self):
         """窗口关闭事件"""
+        self._stop_beep()  # 停止声音警报
         if self.engine.is_running:
             if not messagebox.askyesno(
                 "确认退出",

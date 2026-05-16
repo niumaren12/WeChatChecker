@@ -30,7 +30,7 @@ class CheckerEngine:
         self.on_log = None           # func(msg)
         self.on_status = None        # func(status_text)
         self.on_progress = None      # func(current, total, batch_info)
-        self.on_abnormal = None      # func(wechat_id, reason) -> 返回 True 继续检查，False 停止
+        self.on_abnormal = None      # func(wechat_id, reason) — 非阻塞通知，不返回值
 
         # 当前检查进度
         self.current_batch = 0
@@ -219,13 +219,9 @@ class CheckerEngine:
                             self._emit_log(
                                 f"[异常] {wechat_id}: {detail}", "warn"
                             )
-                            # 通知 GUI
+                            # 非阻塞通知 GUI，继续检查其他账号
                             if self.on_abnormal:
-                                should_stop = self.on_abnormal(wechat_id, detail)
-                                if should_stop:
-                                    self._emit_log("异常触发停止", "warn")
-                                    self._stop_event.set()
-                                    break
+                                self.on_abnormal(wechat_id, detail)
                         elif status == "success":
                             self._emit_log(
                                 f"[正常] {wechat_id}: {detail}", "info"
