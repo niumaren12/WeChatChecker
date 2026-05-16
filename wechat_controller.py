@@ -495,8 +495,11 @@ class WeChatController:
                     r = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
                     rect = (r.left, r.top, r.right, r.bottom)
-            except Exception:
-                pass
+                    logger.info(f"微信窗口位置: left={r.left} top={r.top} "
+                               f"right={r.right} bottom={r.bottom} "
+                               f"({r.right-r.left}x{r.bottom-r.top})")
+            except Exception as e:
+                logger.error(f"获取窗口位置异常: {e}")
 
         if rect is None:
             logger.error("无法获取微信窗口位置，无法截图下拉菜单")
@@ -504,13 +507,15 @@ class WeChatController:
 
         win_left, win_top, win_right, win_bottom = rect
         # 下拉菜单出现在搜索框下方，搜索框约在窗口顶部偏左
-        # 截取窗口左上部：left~left+400, top+40~top+380
         region = (win_left, win_top + 40, win_left + 400, win_top + 380)
+        logger.info(f"截取下拉区域1: {region}")
 
         img = _screenshot_region(*region)
         if img is None:
             logger.error("截图下拉菜单失败")
             return False
+
+        logger.info(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
         # OCR 识别，查找"网络查找"（兼容"网络查找手机/QQ号"等变体）
         matches = _ocr_find_text(img, "网络查找", region[0], region[1])
@@ -518,11 +523,14 @@ class WeChatController:
             cx, cy, text = matches[0]
             logger.info(f"OCR 找到下拉项: '{text}' → 点击 ({cx}, {cy})")
             _mouse_click(cx, cy)
-            time.sleep(2.0)  # 等待弹窗加载
+            time.sleep(2.0)
             return True
+
+        logger.info(f"区域1未找到'网络查找'，共{len(matches)}个匹配")
 
         # 第一次没找到，扩大搜索区域再试
         region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
+        logger.info(f"扩大截取区域2: {region2}")
         img2 = _screenshot_region(*region2)
         if img2 is not None:
             matches2 = _ocr_find_text(img2, "网络查找", region2[0], region2[1])
@@ -532,19 +540,20 @@ class WeChatController:
                 _mouse_click(cx, cy)
                 time.sleep(2.0)
                 return True
+            logger.info(f"区域2也未找到'网络查找'，共{len(matches2)}个匹配")
 
-        # OCR 未找到，记录识别到的所有文字用于调试
+        # OCR 未找到，输出识别到的所有文字用于排查
         try:
             from winocr import recognize_pil_sync
             result = recognize_pil_sync(img)
             lines = result.get("lines", []) if isinstance(result, dict) else getattr(result, "lines", [])
             all_text = " | ".join([
                 (ln.get("text", "") if isinstance(ln, dict) else getattr(ln, "text", ""))
-                for ln in lines[:10]
+                for ln in lines[:15]
             ])
-            logger.warning(f"未找到'网络查找'，OCR识别到的文字: {all_text}")
-        except Exception:
-            pass
+            logger.info(f"OCR识别到的全部文字({len(lines)}行): {all_text}")
+        except Exception as e2:
+            logger.error(f"OCR调试输出异常: {e2}")
 
         logger.error("OCR 未找到下拉菜单中的'网络查找'项")
         return False
