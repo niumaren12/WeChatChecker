@@ -39,6 +39,7 @@ class WeChatCheckerApp:
         self.engine.on_status = self._on_engine_status
         self.engine.on_progress = self._on_engine_progress
         self.engine.on_abnormal = self._on_engine_abnormal
+        self.engine.on_countdown = self._on_engine_countdown
 
         # 异常账号追踪（线程安全）
         self._abnormal_lock = threading.Lock()
@@ -46,6 +47,7 @@ class WeChatCheckerApp:
         self._sound_muted = False
         self._beep_after_id: str | None = None
         self._beep_stopped = False  # 防止竞态：_stop_beep 后 _beep_loop 重新注册 after
+        self._drag_data = {"index": -1, "y": 0, "dragging": False}
 
         # 创建主窗口
         self.root = tk.Tk()
@@ -144,6 +146,10 @@ class WeChatCheckerApp:
             listbox_frame, height=6, selectmode=tk.EXTENDED,
             font=("Consolas", 9), bg="#f5f5f5", relief=tk.SUNKEN,
         )
+        # 拖拽排序绑定
+        self.ids_listbox.bind("<Button-1>", self._on_drag_start)
+        self.ids_listbox.bind("<B1-Motion>", self._on_drag_motion)
+        self.ids_listbox.bind("<ButtonRelease-1>", self._on_drag_drop)
         ids_scrollbar = ttk.Scrollbar(listbox_frame, command=self.ids_listbox.yview)
         self.ids_listbox.config(yscrollcommand=ids_scrollbar.set)
         self.ids_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -432,6 +438,7 @@ class WeChatCheckerApp:
         path = filedialog.askopenfilename(
             title="选择微信主程序",
             filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")],
+            parent=self.root,
         )
         if path:
             self.wechat_path_var.set(path)
@@ -499,6 +506,7 @@ class WeChatCheckerApp:
         path = filedialog.askopenfilename(
             title="选择微信号列表文件",
             filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+            parent=self.root,
         )
         if not path:
             return
@@ -526,6 +534,55 @@ class WeChatCheckerApp:
         """获取当前列表中的微信号"""
         return list(self.ids_listbox.get(0, tk.END))
 
+    # ---- 拖拽排序 ----
+
+    def _on_drag_start(self, event):
+        """记录拖拽起始位置"""
+        idx = self.ids_listbox.nearest(event.y)
+        if idx < 0:
+            return
+        self._drag_data["index"] = idx
+        self._drag_data["y"] = event.y
+        self._drag_data["dragging"] = False
+        # 选中该项
+        self.ids_listbox.selection_clear(0, tk.END)
+        self.ids_listbox.selection_set(idx)
+
+    def _on_drag_motion(self, event):
+        """拖拽移动：超过阈值后进入拖拽模式"""
+        if self._drag_data["index"] < 0:
+            return
+        dy = abs(event.y - self._drag_data["y"])
+        if dy < 5 and not self._drag_data["dragging"]:
+            return  # 未达到拖拽阈值
+        if not self._drag_data["dragging"]:
+            self._drag_data["dragging"] = True
+            self.ids_listbox.configure(cursor="fleur")
+        # 高亮目标位置
+        target = self.ids_listbox.nearest(event.y)
+        self.ids_listbox.selection_clear(0, tk.END)
+        self.ids_listbox.selection_set(target)
+
+    def _on_drag_drop(self, event):
+        """松开鼠标：完成拖拽"""
+        self.ids_listbox.configure(cursor="")
+        if not self._drag_data["dragging"]:
+            self._drag_data["index"] = -1
+            return
+        src = self._drag_data["index"]
+        dst = self.ids_listbox.nearest(event.y)
+        self._drag_data["index"] = -1
+        self._drag_data["dragging"] = False
+        if dst < 0 or dst == src:
+            return
+        # 取出源项，插入目标位置
+        item = self.ids_listbox.get(src)
+        self.ids_listbox.delete(src)
+        self.ids_listbox.insert(dst, item)
+        self.ids_listbox.selection_clear(0, tk.END)
+        self.ids_listbox.selection_set(dst)
+        self._save_ids_to_file()
+
     # ==================== 引擎回调 ====================
 
     def _on_engine_log(self, msg):
@@ -535,6 +592,28 @@ class WeChatCheckerApp:
 
     def _on_engine_status(self, text):
         """引擎状态回调"""
+        self.root.after(0, self._update_status, text)
+
+    def _on_engine_countdown(self, remaining, label):
+        """引擎倒计时回调（在子线程中调用）"""
+        if remaining < 60:
+            time_str = f"{int(remaining)}秒"
+        else:
+            m = int(remaining // 60)
+            s = int(remaining % 60)
+            time_str = f"{m}分{s:02d}秒"
+
+        if label == "account":
+            text = f"等待中 - {time_str}后检查下一个"
+        elif label.startswith("batch_r"):
+            r = label.split("_r")[1]
+            text = f"等待中 - 第{r}轮 下一批 ({time_str}后)"
+        elif label.startswith("round_r"):
+            r = label.split("_r")[1]
+            text = f"等待中 - 下一轮 ({time_str}后)"
+        else:
+            text = f"等待中 - {time_str}后"
+
         self.root.after(0, self._update_status, text)
 
     def _on_engine_progress(self, current, total, batch_info):

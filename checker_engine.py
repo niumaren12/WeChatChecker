@@ -38,6 +38,7 @@ class CheckerEngine:
         self.on_status = None        # func(status_text)
         self.on_progress = None      # func(current, total, batch_info)
         self.on_abnormal = None      # func(wechat_id, reason, telegram_sent)
+        self.on_countdown = None     # func(remaining_seconds, label)
 
         # 当前检查进度
         self.current_batch = 0
@@ -278,7 +279,7 @@ class CheckerEngine:
                             else:
                                 wait_time = random.uniform(ai_min, ai_max)
                                 self._emit_log(f"等待 {wait_time:.1f} 秒后检查下一个...")
-                                self._wait_with_stop(wait_time)
+                                self._wait_with_stop(wait_time, "account")
 
                     total_checked += len(batch)
 
@@ -292,7 +293,7 @@ class CheckerEngine:
                             f"等待中 - 第{round_num}轮 下一批 "
                             f"({wait_min:.0f}分钟后)"
                         )
-                        self._wait_with_stop(wait_min * 60)
+                        self._wait_with_stop(wait_min * 60, f"batch_r{round_num}")
 
                 # 一轮完成
                 if not self._stop_event.is_set():
@@ -314,7 +315,7 @@ class CheckerEngine:
                     self._emit_status(
                         f"等待中 - 下一轮 ({wait_min:.0f}分钟后)"
                     )
-                    self._wait_with_stop(wait_min * 60)
+                    self._wait_with_stop(wait_min * 60, f"round_r{round_num}")
 
         except Exception as e:
             self._emit_log(f"检查循环异常: {e}", "error")
@@ -326,10 +327,16 @@ class CheckerEngine:
             self._emit_status("已停止" if self._stop_event.is_set() else "已完成")
             self._emit_log("检查已停止")
 
-    def _wait_with_stop(self, seconds):
-        """等待指定秒数，期间可被停止信号打断"""
+    def _wait_with_stop(self, seconds, countdown_label=""):
+        """等待指定秒数，期间可被停止信号打断，每秒发倒计时回调"""
         interval = 0.5  # 每 0.5 秒检查一次停止信号
         elapsed = 0
+        last_reported = -1  # 只在秒数变化时发回调，减少 GUI 负担
         while elapsed < seconds and not self._stop_event.is_set():
             time.sleep(min(interval, seconds - elapsed))
+            elapsed += interval
+            remaining = max(0, seconds - elapsed)
+            if self.on_countdown and countdown_label and int(remaining) != last_reported:
+                self.on_countdown(remaining, countdown_label)
+                last_reported = int(remaining)
             elapsed += interval
