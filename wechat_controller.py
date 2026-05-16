@@ -982,13 +982,22 @@ class WeChatController:
 
         # 4. 点击下拉项
         if not self.click_dropdown_item():
-            # 如果没找到下拉项，可能是搜索无结果，也算异常
             self.close_popup()
             self.clear_search()
             return ("abnormal", "搜索无结果或无法点开详情")
 
+        # OCR/点击期间用户可能点了停止，立即退出
+        if self._stop_event and self._stop_event.is_set():
+            return ("error", "用户停止")
+
         # 5. 检测弹窗状态
         status, detail = self.check_popup_status()
+
+        # OCR/UIA 搜索期间用户可能点了停止
+        if self._stop_event and self._stop_event.is_set():
+            self.close_popup()
+            self.clear_search()
+            return ("error", "用户停止")
 
         # 6. 关闭弹窗并清空搜索框
         self.close_popup()

@@ -227,6 +227,15 @@ class CheckerEngine:
                             break
                         status, detail = self.wechat.check_single_account(wechat_id)
 
+                        # 停止信号检查：OCR 等阻塞操作期间用户可能点了停止
+                        if self._stop_event.is_set():
+                            self.checked_accounts.append({
+                                "id": wechat_id,
+                                "status": status,
+                                "detail": detail,
+                            })
+                            break
+
                         self.checked_accounts.append({
                             "id": wechat_id,
                             "status": status,

@@ -764,7 +764,7 @@ class WeChatCheckerApp:
     def _stop_check(self):
         """停止检查"""
         self.engine.stop()
-        self._update_status("正在停止...")
+        self._update_status("正在停止...（等待当前操作完成）")
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
 
