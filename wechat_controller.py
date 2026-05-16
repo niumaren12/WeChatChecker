@@ -197,19 +197,36 @@ def _type_text(text):
 
 
 def _capture_pixels(hwnd, left, top, right, bottom):
-    """截取窗口区域，返回 (width, height, pixels_bgra)。
-    pixels_bgra 是 bytes，每4字节为 B,G,R,A（BMP 格式，底部行在前）。
-    调用方用 _get_pixel(pixels, width, x, y) 读取指定坐标颜色。"""
+    """截取窗口区域，返回 (width, height, pixels_bgra_topdown)。
+    64位兼容：显式设置 argtypes 避免句柄溢出。"""
     width = right - left
     height = bottom - top
     if width <= 0 or height <= 0:
         return (0, 0, b"")
 
-    hdc_win = ctypes.windll.user32.GetWindowDC(hwnd)
-    hdc_mem = ctypes.windll.gdi32.CreateCompatibleDC(hdc_win)
-    h_bmp = ctypes.windll.gdi32.CreateCompatibleBitmap(hdc_win, width, height)
-    ctypes.windll.gdi32.SelectObject(hdc_mem, h_bmp)
-    ctypes.windll.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, left, top, 0x00CC0020)
+    # 显式声明 argtypes 防止 64 位句柄溢出
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    user32.GetWindowDC.argtypes = [ctypes.c_void_p]
+    user32.GetWindowDC.restype = ctypes.c_void_p
+    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+
+    hdc_win = user32.GetWindowDC(hwnd)
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_win)
+    h_bmp = gdi32.CreateCompatibleBitmap(hdc_win, width, height)
+    gdi32.SelectObject(hdc_mem, h_bmp)
+    # BitBlt 有9个参数，需要完整声明
+    gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, left, top, 0x00CC0020)
 
     class BI(ctypes.Structure):
         _fields_ = [
@@ -229,7 +246,9 @@ def _capture_pixels(hwnd, left, top, right, bottom):
 
     buf_size = width * height * 4
     buf = (ctypes.c_ubyte * buf_size)()
-    ctypes.windll.gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
+    gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+                                 ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    gdi32.GetDIBits(hdc_mem, h_bmp, 0, height, buf, ctypes.byref(bi), 0)
 
     # 翻转行顺序：BMP 底部行在前 → 顶行在前
     row_size = width * 4
@@ -239,9 +258,9 @@ def _capture_pixels(hwnd, left, top, right, bottom):
         dst_start = y * row_size
         pixels_topdown[dst_start:dst_start + row_size] = buf[src_start:src_start + row_size]
 
-    ctypes.windll.gdi32.DeleteObject(h_bmp)
-    ctypes.windll.gdi32.DeleteDC(hdc_mem)
-    ctypes.windll.user32.ReleaseDC(hwnd, hdc_win)
+    gdi32.DeleteObject(h_bmp)
+    gdi32.DeleteDC(hdc_mem)
+    user32.ReleaseDC(hwnd, hdc_win)
     return (width, height, bytes(pixels_topdown))
 
 
