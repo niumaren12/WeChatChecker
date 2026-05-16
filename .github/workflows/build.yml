@@ -46,7 +46,10 @@ jobs:
         shell: cmd
         run: |
           pyinstaller --onefile --windowed --icon=app.ico --name WeChatChecker ^
-            --paths . --collect-all wechat_controller ^
+            --debug imports ^
+            --additional-hooks-dir hooks ^
+            --paths . ^
+            --hidden-import wechat_controller ^
             --hidden-import PIL --hidden-import PIL.Image ^
             --hidden-import PIL.ImageOps --hidden-import PIL.ImageFilter ^
             --add-data "config.json;." ^
