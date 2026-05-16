@@ -600,7 +600,7 @@ class WeChatController:
                 except Exception as e:
                     _glog(f"无法获取弹窗位置: {e}")
 
-            # 像素检测"添加到通讯录"按钮（灰色 RGB≈204,204,204）
+            # 像素检测"添加到通讯录"按钮：灰底 + 黑字 = 有文字的按钮
             has_add_button = False
             if popup_rect and popup_hwnd:
                 try:
@@ -612,23 +612,29 @@ class WeChatController:
                         btn_y1 = int(h * 0.80)
                         btn_x2 = int(w * 0.90)
                         btn_y2 = int(h * 0.95)
+                        # 灰色背景 (按钮底色)
                         gray_range = ((170, 240), (170, 240), (170, 240))
                         gray_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, gray_range)
+                        # 黑色/深色文字 (按钮上的字)
+                        dark_range = ((0, 60), (0, 60), (0, 60))
+                        dark_count = _count_pixels(pixels, w, h, btn_x1, btn_y1, btn_x2, btn_y2, dark_range)
                         total_in_rect = (btn_x2 - btn_x1) * (btn_y2 - btn_y1)
                         gray_pct = gray_count / total_in_rect * 100 if total_in_rect > 0 else 0
-                        has_add_button = gray_pct > 15
-                        _glog(f"像素检测: 灰色={gray_count}/{total_in_rect} ({gray_pct:.0f}%) → "
-                              f"按钮={'存在' if has_add_button else '不存在'}")
+                        dark_pct = dark_count / total_in_rect * 100 if total_in_rect > 0 else 0
+                        # 灰底(>60%) + 黑字(>2%) = 有文字的按钮 = "添加到通讯录"
+                        has_add_button = gray_pct > 60 and dark_pct > 2
+                        _glog(f"像素检测: 灰底={gray_pct:.0f}% 黑字={dark_pct:.1f}% → "
+                              f"按钮={'有文字' if has_add_button else '无文字/不存在'}")
                 except Exception as e:
                     _glog(f"像素检测异常: {e}，回退到弹窗打开=正常")
 
             # 判断逻辑
             if has_add_button:
-                _glog("弹窗: 找到按钮 → 正常")
+                _glog("弹窗: 按钮有文字(添加到通讯录) → 正常")
                 return ("normal", "(已识别按钮)")
             elif popup_rect:
-                _glog("弹窗: 已打开 → 正常")
-                return ("normal", "(弹窗已打开)")
+                _glog("弹窗: 已打开但按钮无文字 → 可能异常")
+                return ("abnormal", "按钮无文字")
             else:
                 return ("abnormal", "弹窗未打开")
 
