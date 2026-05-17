@@ -40,7 +40,8 @@ Tesseract OCR 引擎的打包流程：
 ```
 main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   ├── checker_engine.py # 检查引擎（CheckerEngine）— 子线程循环/批次/进度，start_with_ids() 接收列表
-  │   └── wechat_controller.py  # 微信自动化（WeChatController）
+  │   ├── wechat_controller.py  # 微信自动化（WeChatController）
+  │   └── telegram_notifier.py  # Telegram Bot 通知（urllib，无外部依赖）
   ├── config_manager.py # 配置读写（config.json）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 
@@ -59,7 +60,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - `mss` + `Pillow` + `pytesseract` — OCR 文字识别链路
 - Tesseract 引擎 — 系统级依赖，CI 中通过 choco 安装后打入 exe，运行时自动解压
 
-**数据流**: GUI 微信号列表 → `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口 → Ctrl+F 搜索 → 输入微信号 → OCR 识别下拉菜单"网络查找"并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内"添加到通讯录"文字 → 回调 GUI。
+**数据流**: GUI 微信号列表（支持拖拽排序）→ `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口（验证前景）→ Ctrl+F 搜索（检查窗口置顶）→ 输入微信号 → OCR 识别下拉菜单（多关键字回退）并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内文字（多关键字回退）→ 回调 GUI（含 Telegram 通知状态）。
 
 ## 关键：微信 PC 4.x 是 CEF/Chromium 应用（进程名 Weixin.exe）
 
@@ -79,11 +80,11 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 ## 微信窗口操作流程
 
-1. `activate_window`: Win32 `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow`
-2. `focus_search_box`: `_send_hotkey(ctrl, f)` → 等待 1.5s
-3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板
-4. `click_dropdown_item`: 等待 1.5s → mss 截图搜索框下方 → pytesseract 识别"网络查找" → `_mouse_click`（SetCursorPos+mouse_event 真实鼠标事件）点击文字中心
-5. `check_popup_status`: 两级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 检查是否包含"添加到通讯录"
+1. `activate_window`: Win32 `ShowWindow(SW_RESTORE)` + `BringWindowToTop` + `SetForegroundWindow` → `GetForegroundWindow()` 验证是否真的置顶，失败重试一次
+2. `focus_search_box`: 先检查 `GetForegroundWindow() == 微信hwnd` → 确认窗口在前台再发 `Ctrl+F` → 等待
+3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板（base64 + PowerShell）
+4. `click_dropdown_item`: 等待 2s → mss 截图搜索框下方（按窗口比例计算区域）→ pytesseract 多关键字回退匹配 `("网络查找", "QQ号", "络找", "查找", "络查")` → `_mouse_click` 点击 → 失败则等 1.5s 同区域重试
+5. `check_popup_status`: 两级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 多关键字回退 `("添加到通讯录", "添加到", "通讯录")`
 
 ## OCR 文字识别（Tesseract 内置打包）
 
@@ -97,8 +98,13 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - `_mouse_click(x, y)` — Win32 `SetCursorPos` + `mouse_event` 点击屏幕坐标
 
 两个核心场景：
-1. **下拉菜单**：截图搜索框下方区域 → OCR 找"网络查找" → 鼠标点击
-2. **弹窗按钮**：UIA 两级搜索定位弹窗 → 截图弹窗 → OCR 检查"添加到通讯录"
+1. **下拉菜单**：按窗口尺寸比例计算截图区域（左2%顶8% → 左78%顶72%，适配不同DPI/分辨率）→ OCR 多关键字回退 `("网络查找", "QQ号", "络找", "查找", "络查")` → 鼠标点击。第一次失败后等 1.5s 同区域重试（应对下拉加载慢）
+2. **弹窗按钮**：UIA 两级搜索定位弹窗 → 截图弹窗 → OCR 多关键字回退 `("添加到通讯录", "添加到", "通讯录")`
+
+OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
+1. 逐条目精确匹配 (conf > 15)
+2. 同行拼接回退（CEF 字符间距导致单字被拆分，按 y 坐标容差 10px 分组合并）
+3. 全文拼接兜底
 
 依赖：`pytesseract>=0.3.10`、`mss>=9.0.0`、`Pillow>=10.0.0`、Tesseract 引擎（CI 构建时通过 choco 安装后打入 exe）
 
@@ -119,9 +125,55 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 ## 配置文件
 
-- `config.json`: 微信路径、批次参数、间隔、max_rounds
+- `config.json`: 微信路径、批次参数、间隔、max_rounds、sound_enabled、Telegram 通知配置
 - `wechat_ids.txt`: 微信号列表（GUI 内增删改，自动同步到此文件，不再手动编辑）
-- 微信号管理已内置到 GUI（Listbox + 添加/删除/导入/清空），引擎通过 `start_with_ids()` 接收列表
+- 微信号管理已内置到 GUI（Listbox + 添加/删除/导入/清空/拖拽排序），引擎通过 `start_with_ids()` 接收列表
+
+## Telegram 通知
+
+通过 Telegram Bot API 将异常账号信息推送到指定频道/群组。
+
+- **模块**: `telegram_notifier.py`，使用标准库 `urllib.request`，无外部依赖
+- **Token**: 硬编码在 `telegram_notifier.py` 顶部 `TELEGRAM_BOT_TOKEN` 常量
+- **Chat ID**: 在 GUI 右侧 Telegram 面板中配置，持久化到 `config.json` 的 `telegram_chat_id`
+- **代理**: 可选，在 GUI 中填写 `http://127.0.0.1:7890` 格式的代理地址。不填则走系统代理（`urllib` 默认行为）
+- **限流**: 两次发送最小间隔 1 秒，防止 Telegram API 429
+- **线程安全**: `threading.Lock` 保护发送状态
+- **静默失败**: 网络错误只记日志，不中断检查循环
+- GUI 异常面板每条记录显示通知状态：`✅已通知` / `❌发送失败` / `—`(未启用)
+
+### Telegram 相关配置项
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `telegram_enabled` | bool | `false` | 总开关 |
+| `telegram_chat_id` | str | `"-1003974347005"` | 目标频道/群组 ID |
+| `telegram_proxy` | str | `""` | 代理地址（选填） |
+| `telegram_message_template` | str | 含占位符的模板 | `{wechat_id}`, `{reason}`, `{timestamp}` |
+
+## 倒计时
+
+等待期间状态栏实时显示剩余时间，非静态文本。
+
+- **引擎侧**: `CheckerEngine` 新增 `on_countdown` 回调，`_wait_with_stop()` 每 0.5s 调用一次
+- **GUI 侧**: `_on_engine_countdown(remaining, label)` 格式化后更新状态栏
+- 账号间等待：`等待中 - 4秒后检查下一个`
+- 批次间等待：`等待中 - 第2轮 下一批 (3分25秒后)`
+- 轮次间等待：`等待中 - 下一轮 (12分08秒后)`
+- 只在秒数变化时更新 GUI（减少 UI 负担）
+
+## 微信号列表拖拽排序
+
+- Listbox 绑定 `<Button-1>`, `<B1-Motion>`, `<ButtonRelease-1>`
+- 拖拽超过 5px 阈值进入拖拽模式，光标变为 `fleur`
+- 松手完成排序，自动保存到 `wechat_ids.txt`
+
+## 窗口激活验证
+
+防止窗口未置顶导致键盘操作发到错误窗口：
+
+- `activate_window`: `SetForegroundWindow` 后用 `GetForegroundWindow()` 验证，失败自动重试
+- `focus_search_box`: 发 Ctrl+F 前检查 `GetForegroundWindow() == 微信 hwnd`
 
 ## CI/CD
 
@@ -185,3 +237,39 @@ CI 流程 (`build.yml`)：
 **根因**: PyInstaller 打包的 tesseract.exe 依赖 VC++ 运行时。极少数精简版 Windows 缺少。自检代码 `_check_runtime_env` 会在启动 500ms 后检测并警告。
 
 **解决**: CI 构建的 exe 已通过 choco 安装 tesseract 并打入 bundle。如仍不可用，安装 [VC++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
+
+### OCR 同台电脑部分账号失败（下拉菜单识别不到）
+
+**症状**: 同一台电脑，有的账号正常，有的OCR识别不到"网络查找"。日志显示碎片如 `网|络|查|手|机`，"找"字丢失。
+
+**根因**: ClearType 子像素渲染导致 Tesseract 对笔画密集的字（"找"、"到"、"录"）时灵时不灵。不同 ID 号码长度不同，文字像素位置微移，渲染结果不同。
+
+**修复**: 
+- 下拉匹配目标改为多级回退：`("网络查找", "QQ号", "络找", "查找", "络查")`
+- 弹窗匹配改为多级回退：`("添加到通讯录", "添加到", "通讯录")`
+- "QQ号"是英文数字组合，Tesseract 识别稳定
+- 下拉区域改为同一区域两次重试（等 2s → 失败等 1.5s 再截一次）
+
+### OCR 换电脑截图区域偏移
+
+**症状**: 换电脑后下拉菜单 OCR 识别率大幅下降。
+
+**根因**: 截图区域用硬编码像素偏移（`win_top + 40`、宽度 `400`、高度 `340`），不同 DPI/分辨率下对不上实际 UI。
+
+**修复**: 改为按窗口尺寸比例计算：`int(win_w * 0.02)` ~ `int(win_w * 0.78)`、`int(win_h * 0.08)` ~ `int(win_h * 0.72)`。
+
+### Telegram 通知换电脑失效
+
+**症状**: 旧电脑 Telegram 通知正常，新电脑完全收不到。
+
+**根因**: `urllib.request.urlopen()` 无显式代理配置，直连 `api.telegram.org`（国内被封锁）。旧电脑有系统代理，新电脑没有。
+
+**修复**: 在 TelegramNotifier 中支持可选代理参数，GUI 面板加代理输入框。不填走系统代理，填了走指定代理。
+
+### 窗口未置顶导致键盘操作发错窗口
+
+**症状**: 偶尔一整批账号都异常，日志无明显错误。
+
+**根因**: `SetForegroundWindow` 可能被 Windows 静默拒绝（其他进程拦截），后续 Ctrl+F/输入都发到了错误窗口。
+
+**修复**: `activate_window` 用 `GetForegroundWindow()` 验证置顶结果，失败重试；`focus_search_box` 发快捷键前检查窗口是否在前台。
