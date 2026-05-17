@@ -785,7 +785,7 @@ class WeChatController:
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
             # 多级匹配：从最精确到最宽松
-            for target in ("网络查找", "络找"):
+            for target in ("网络查找", "QQ号", "络找", "查找", "络查"):
                 matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
                 if matches:
                     cx, cy, text = matches[0]
@@ -896,9 +896,15 @@ class WeChatController:
                 try:
                     img = _screenshot_region(*popup_rect)
                     if img is not None:
-                        has_add_button = _ocr_contains_text(img, "添加到通讯录", glog=self._emit_log)
+                        has_add_button = False
+                        hit_target = ""
+                        for target in ("添加到通讯录", "添加到", "通讯录"):
+                            if _ocr_contains_text(img, target, glog=self._emit_log):
+                                has_add_button = True
+                                hit_target = target
+                                break
                         self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
-                                       f"→ {'找到' if has_add_button else '未找到'}'添加到通讯录'")
+                                       f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'")
                 except Exception as e:
                     self._emit_log(f"OCR弹窗检测异常: {e}")
 
