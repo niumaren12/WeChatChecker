@@ -26,6 +26,9 @@ class CheckerEngine:
         self.wechat._gui_log = self._emit_log      # 注入 GUI 日志回调
         self._running = False
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()   # 暂停信号
+        self._new_ids = None    # 恢复时的微信号列表（None=不更新）
+        self._new_cfg = None    # 恢复时的配置快照（None=不更新）
         self.wechat.set_stop_event(self._stop_event)  # 注入停止信号
 
         # Telegram 通知器
@@ -87,6 +90,30 @@ class CheckerEngine:
         """请求停止检查"""
         self._stop_event.set()
         self._emit_log("用户请求停止检查", "warn")
+
+    def pause(self):
+        """暂停检查（冻结倒计时）"""
+        self._pause_event.set()
+        self._emit_log("检查已暂停")
+        self._emit_status("已暂停")
+
+    def resume(self, ids=None, cfg=None):
+        """
+        继续检查，可选传入新的ID列表和配置快照。
+
+        Args:
+            ids: 微信号列表，None 则不更新
+            cfg: 配置快照字典，None 则不更新
+        """
+        self._new_ids = ids
+        self._new_cfg = cfg
+        self._pause_event.clear()
+        if ids is not None:
+            self.total_accounts = len(ids)
+            self._emit_log(f"继续检查，微信号列表已刷新（{len(ids)} 个）")
+        if cfg is not None:
+            self._emit_log("继续检查，配置已刷新")
+        self._emit_status("检查中...")
 
     def start(self, ids_file=None):
         """
@@ -205,6 +232,22 @@ class CheckerEngine:
             while not self._stop_event.is_set() and round_num < max_rounds:
                 round_num += 1
                 self.wechat.wechat_window = None  # 每轮强制刷新 UIA 缓存，避免脏控件树
+
+                # 恢复时刷新ID列表和配置
+                if self._new_ids is not None:
+                    all_ids = self._new_ids
+                    self.total_accounts = len(all_ids)
+                    self._new_ids = None
+                if self._new_cfg is not None:
+                    cfg = self._new_cfg
+                    batch_size = cfg["batch_size"]
+                    bi_min = cfg["batch_interval_min"]
+                    bi_max = cfg["batch_interval_max"]
+                    ai_min = cfg["account_interval_min"]
+                    ai_max = cfg["account_interval_max"]
+                    max_rounds = cfg["max_rounds"]
+                    self._new_cfg = None
+
                 self._emit_log(f"====== 第 {round_num} 轮检查开始 ======")
                 self._emit_status(f"检查中 - 第{round_num}轮")
 
@@ -335,15 +378,22 @@ class CheckerEngine:
             self._emit_log("检查已停止")
 
     def _wait_with_stop(self, seconds, countdown_label=""):
-        """等待指定秒数，期间可被停止信号打断，每秒发倒计时回调"""
-        interval = 0.5  # 每 0.5 秒检查一次停止信号
+        """等待指定秒数，可被停止/暂停打断。暂停时倒计时冻结。"""
+        interval = 0.5  # 每 0.5 秒检查一次信号
         elapsed = 0
-        last_reported = -1  # 只在秒数变化时发回调，减少 GUI 负担
+        last_reported = -1
         while elapsed < seconds and not self._stop_event.is_set():
+            # 检查暂停信号
+            if self._pause_event.is_set():
+                self._emit_status("已暂停")
+                self._pause_event.wait()  # 阻塞到恢复
+                if self._stop_event.is_set():
+                    return
+                self._emit_status("检查中...")
+
             time.sleep(min(interval, seconds - elapsed))
             elapsed += interval
             remaining = max(0, seconds - elapsed)
             if self.on_countdown and countdown_label and int(remaining) != last_reported:
                 self.on_countdown(remaining, countdown_label)
                 last_reported = int(remaining)
-            elapsed += interval

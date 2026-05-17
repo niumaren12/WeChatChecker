@@ -47,6 +47,7 @@ class WeChatCheckerApp:
         self._sound_muted = False
         self._beep_after_id: str | None = None
         self._beep_stopped = False  # 防止竞态：_stop_beep 后 _beep_loop 重新注册 after
+        self._paused = False        # 暂停状态
         self._drag_data = {"index": -1, "y": 0, "dragging": False}
 
         # 创建主窗口
@@ -277,6 +278,12 @@ class WeChatCheckerApp:
             command=self._start_check
         )
         self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.pause_btn = ttk.Button(
+            btn_frame, text="⏸ 暂停", width=14,
+            command=self._on_pause_resume, state=tk.DISABLED
+        )
+        self.pause_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.stop_btn = ttk.Button(
             btn_frame, text="■ 停止检查", width=14,
@@ -616,6 +623,16 @@ class WeChatCheckerApp:
     def _on_engine_status(self, text):
         """引擎状态回调"""
         self.root.after(0, self._update_status, text)
+        # 引擎完成/停止时重置按钮
+        if text in ("已完成", "已停止"):
+            self.root.after(0, self._on_engine_finished)
+
+    def _on_engine_finished(self):
+        """引擎完成/停止后的按钮重置"""
+        self.start_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(state=tk.DISABLED, text="⏸ 暂停")
+        self.stop_btn.config(state=tk.DISABLED)
+        self._paused = False
 
     def _on_engine_countdown(self, remaining, label):
         """引擎倒计时回调（在子线程中调用）"""
@@ -664,6 +681,7 @@ class WeChatCheckerApp:
         with self._abnormal_lock:
             self._abnormal_dict[wechat_id] = entry
 
+        self._sound_muted = False  # 新异常出现，恢复声音警报
         self.root.after(0, self._refresh_abnormal_panel)
         self.root.after(0, self._ensure_beeping)
 
@@ -901,7 +919,9 @@ class WeChatCheckerApp:
 
         # 切换按钮状态
         self.start_btn.config(state=tk.DISABLED)
+        self.pause_btn.config(state=tk.NORMAL, text="⏸ 暂停")
         self.stop_btn.config(state=tk.NORMAL)
+        self._paused = False
 
         # 清空上一次的日志，立即写入启动提示
         self.log_text.config(state=tk.NORMAL)
@@ -929,14 +949,53 @@ class WeChatCheckerApp:
             logger.error(err_msg)
             self._append_log_immediate(f"[错误] {err_msg}")
             self.start_btn.config(state=tk.NORMAL)
+            self.pause_btn.config(state=tk.DISABLED, text="⏸ 暂停")
             self.stop_btn.config(state=tk.DISABLED)
+            self._paused = False
 
     def _stop_check(self):
         """停止检查"""
         self.engine.stop()
         self._update_status("正在停止...（等待当前操作完成）")
         self.start_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(state=tk.DISABLED, text="⏸ 暂停")
         self.stop_btn.config(state=tk.DISABLED)
+        self._paused = False
+
+    def _on_pause_resume(self):
+        """暂停/继续切换"""
+        if self._paused:
+            # 继续：重新读取配置和微信号
+            self._save_ui_to_config()
+            ids = self._get_ids_list()
+            if not ids:
+                messagebox.showwarning("列表为空", "微信号列表为空", parent=self.root)
+                return
+
+            cfg = {
+                "batch_size": self.config.get("batch_size", 9),
+                "batch_interval_min": self.config.get("batch_interval_min", 30),
+                "batch_interval_max": self.config.get("batch_interval_max", 50),
+                "account_interval_min": self.config.get("account_interval_min", 3),
+                "account_interval_max": self.config.get("account_interval_max", 5),
+                "max_rounds": self.config.get("max_rounds", 100),
+            }
+
+            # 刷新 Telegram 配置
+            self.engine._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
+            self.engine._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
+            self.engine._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
+
+            self.engine.resume(ids=ids, cfg=cfg)
+            self._paused = False
+            self.pause_btn.config(text="⏸ 暂停")
+            self._update_status("检查中...")
+        else:
+            # 暂停
+            self.engine.pause()
+            self._paused = True
+            self.pause_btn.config(text="▶ 继续")
+            self._update_status("已暂停")
 
     def _on_close(self):
         """窗口关闭事件"""
