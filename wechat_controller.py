@@ -603,9 +603,14 @@ class WeChatController:
                 if hwnd and ctypes.windll.user32.IsWindow(hwnd):
                     ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                     ctypes.windll.user32.BringWindowToTop(hwnd)
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    self._sleep(0.3)
-                    return True
+                    # 尝试置顶，验证是否成功
+                    for attempt in range(2):
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        self._sleep(0.2)
+                        if ctypes.windll.user32.GetForegroundWindow() == hwnd:
+                            return True
+                    # 两次置顶均失败，清除缓存重新搜索
+                    self._emit_log("窗口置顶失败，重新搜索...", "warn")
             except Exception:
                 pass
             # 窗口已失效，清空缓存重新搜索
@@ -643,14 +648,19 @@ class WeChatController:
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.BringWindowToTop(hwnd)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-                self._sleep(0.3)
+                for attempt in range(2):
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.2)
+                    if ctypes.windll.user32.GetForegroundWindow() == hwnd:
+                        self.wechat_window = window
+                        return True
+                self._emit_log("无法将微信窗口置顶（可能被其他程序拦截）", "error")
+                return False
             else:
                 window.SetActive()
                 self._sleep(0.3)
 
             self.wechat_window = window
-            logger.debug("微信窗口已激活为前台窗口")
             return True
 
         except Exception as e:
@@ -661,7 +671,7 @@ class WeChatController:
 
     def focus_search_box(self):
         """
-        按 Ctrl+F 激活搜索框
+        按 Ctrl+F 激活搜索框。先确认窗口在前台，再发快捷键。
         用 Win32 keybd_event，不依赖 uiautomation COM 线程
         """
         if not UIA_AVAILABLE:
@@ -669,6 +679,13 @@ class WeChatController:
             return False
 
         try:
+            # 核实微信窗口仍在最前，否则 Ctrl+F 发到错误窗口
+            if self.wechat_window:
+                hwnd = self.wechat_window.NativeWindowHandle
+                if hwnd and ctypes.windll.user32.GetForegroundWindow() != hwnd:
+                    self._emit_log("微信窗口不在前台，无法聚焦搜索框", "error")
+                    return False
+
             _send_hotkey(_VK["ctrl"], _VK["f"])
             self._sleep(1.5)
             logger.debug("已按下 Ctrl+F 激活搜索框")
