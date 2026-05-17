@@ -742,8 +742,9 @@ class WeChatController:
         """
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
         截图搜索框下方区域 → Tesseract 识别 → 鼠标点击文字中心
+        同区域两次重试：第1次等2s，失败再等1.5s重试（应对下拉加载慢）
         """
-        self._sleep(1.5)
+        self._sleep(2.0)  # 等待下拉菜单加载
 
         hwnd = None
         rect = None
@@ -765,14 +766,22 @@ class WeChatController:
             return False
 
         win_left, win_top, win_right, win_bottom = rect
+        win_w = win_right - win_left
+        win_h = win_bottom - win_top
+        # 下拉区域：窗口左上(2%, 8%) 到 右下(78%, 72%)
+        region = (win_left + int(win_w * 0.02), win_top + int(win_h * 0.08),
+                  win_left + int(win_w * 0.78), win_top + int(win_h * 0.72))
 
-        def _try_click_dropdown(region, label):
-            """尝试截取指定区域并 OCR 识别点击，支持多级匹配回退"""
-            self._emit_log(f"截取下拉区域{label}: {region}")
+        for attempt in range(2):
+            if attempt > 0:
+                self._emit_log("下拉菜单未出现，等待1.5秒后重试...")
+                self._sleep(1.5)
+
+            self._emit_log(f"截取下拉区域{attempt+1}: {region}")
             img = _screenshot_region(*region)
             if img is None:
                 self._emit_log("截图下拉菜单失败", "error")
-                return False
+                continue
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
 
             # 多级匹配：从最精确到最宽松
@@ -790,29 +799,10 @@ class WeChatController:
                     _mouse_click(cx, cy)
                     self._sleep(2.0)
                     return True
-            return False
 
-        # 按窗口比例计算截图区域（适配不同DPI/分辨率/窗口大小）
-        win_w = win_right - win_left
-        win_h = win_bottom - win_top
-
-        # 第1次尝试：搜索框正下方（约占窗口宽78%、高64%）
-        region1 = (win_left + int(win_w * 0.02), win_top + int(win_h * 0.08),
-                   win_left + int(win_w * 0.78), win_top + int(win_h * 0.72))
-        if _try_click_dropdown(region1, "1"):
-            return True
-
-        # 第2次尝试：扩大范围（约占窗口宽85%、高72%）
-        region2 = (win_left, win_top + int(win_h * 0.06),
-                   win_left + int(win_w * 0.85), win_top + int(win_h * 0.78))
-        if _try_click_dropdown(region2, "2(扩区)"):
-            return True
-
-        # 均失败：诊断输出
+        # 两次均失败：诊断输出
         try:
-            diag_img = _screenshot_region(*region1)
-            if diag_img is None:
-                diag_img = _screenshot_region(*region2)
+            diag_img = _screenshot_region(*region)
             if diag_img is not None:
                 entries, rows, full_text = _ocr_get_text_entries(diag_img)
                 if entries:
