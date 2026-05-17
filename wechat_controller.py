@@ -775,13 +775,19 @@ class WeChatController:
                     return True
             return False
 
-        # 第1次尝试：搜索框正下方
-        region1 = (win_left, win_top + 40, win_left + 400, win_top + 380)
+        # 按窗口比例计算截图区域（适配不同DPI/分辨率/窗口大小）
+        win_w = win_right - win_left
+        win_h = win_bottom - win_top
+
+        # 第1次尝试：搜索框正下方（约占窗口宽78%、高64%）
+        region1 = (win_left + int(win_w * 0.02), win_top + int(win_h * 0.08),
+                   win_left + int(win_w * 0.78), win_top + int(win_h * 0.72))
         if _try_click_dropdown(region1, "1"):
             return True
 
-        # 第2次尝试：扩大范围
-        region2 = (win_left, win_top + 30, win_left + 500, win_top + 450)
+        # 第2次尝试：扩大范围（约占窗口宽85%、高72%）
+        region2 = (win_left, win_top + int(win_h * 0.06),
+                   win_left + int(win_w * 0.85), win_top + int(win_h * 0.78))
         if _try_click_dropdown(region2, "2(扩区)"):
             return True
 

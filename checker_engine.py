@@ -32,6 +32,7 @@ class CheckerEngine:
         self._telegram_notifier = TelegramNotifier(
             enabled=config_mgr.get("telegram_enabled", False),
             chat_id=config_mgr.get("telegram_chat_id", ""),
+            proxy=config_mgr.get("telegram_proxy", ""),
         )
 
         # 回调函数（供 GUI 使用）

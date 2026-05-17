@@ -32,9 +32,10 @@ DEFAULT_TEMPLATE = (
 class TelegramNotifier:
     """Telegram Bot 通知发送器，线程安全"""
 
-    def __init__(self, enabled: bool = False, chat_id: str = ""):
+    def __init__(self, enabled: bool = False, chat_id: str = "", proxy: str = ""):
         self._enabled = enabled
         self._chat_id = chat_id
+        self._proxy = proxy.strip() if proxy else ""
         self._lock = threading.Lock()
         self._last_send_time: float = 0.0
         self._min_interval: float = 1.0  # 两次发送最小间隔（秒）
@@ -136,7 +137,13 @@ class TelegramNotifier:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            if self._proxy:
+                proxy_handler = urllib.request.ProxyHandler({"https": self._proxy})
+                opener = urllib.request.build_opener(proxy_handler)
+                resp = opener.open(req, timeout=10)
+            else:
+                resp = urllib.request.urlopen(req, timeout=10)
+            with resp:
                 body = resp.read().decode("utf-8")
                 data = json.loads(body)
                 if data.get("ok"):

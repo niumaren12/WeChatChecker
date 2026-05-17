@@ -158,6 +158,12 @@ class WeChatCheckerApp:
             telegram_frame, textvariable=self.telegram_chatid_var, width=22
         ).pack(fill=tk.X)
 
+        ttk.Label(telegram_frame, text="代理地址 (选填):", font=("微软雅黑", 8)).pack(anchor=tk.W, pady=(8, 2))
+        self.telegram_proxy_var = tk.StringVar()
+        ttk.Entry(
+            telegram_frame, textvariable=self.telegram_proxy_var, width=22
+        ).pack(fill=tk.X)
+
         self.telegram_test_btn = ttk.Button(
             telegram_frame, text="🔄 发送测试消息", width=14,
             command=self._on_test_telegram,
@@ -261,7 +267,6 @@ class WeChatCheckerApp:
         ttk.Checkbutton(
             sound_row, text="🔊 异常时声音播报", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
-        self.telegram_status_label.pack(side=tk.LEFT)
 
         # ---- 控制按钮区域 ----
         btn_frame = ttk.Frame(main_frame)
@@ -416,6 +421,7 @@ class WeChatCheckerApp:
         self.sound_enabled_var.set(self.config.get("sound_enabled", True))
         self.telegram_enabled_var.set(self.config.get("telegram_enabled", False))
         self.telegram_chatid_var.set(self.config.get("telegram_chat_id", ""))
+        self.telegram_proxy_var.set(self.config.get("telegram_proxy", ""))
         # 从文件加载微信号列表到界面
         self._load_ids_to_listbox()
 
@@ -448,6 +454,7 @@ class WeChatCheckerApp:
         self.config.set("sound_enabled", self.sound_enabled_var.get())
         self.config.set("telegram_enabled", self.telegram_enabled_var.get())
         self.config.set("telegram_chat_id", self.telegram_chatid_var.get().strip())
+        self.config.set("telegram_proxy", self.telegram_proxy_var.get().strip())
 
     def _browse_wechat_path(self):
         """浏览选择微信可执行文件"""
@@ -820,7 +827,8 @@ class WeChatCheckerApp:
         def _do_test():
             from telegram_notifier import TelegramNotifier
             chat_id = self.telegram_chatid_var.get().strip()
-            notifier = TelegramNotifier(enabled=True, chat_id=chat_id)
+            proxy = self.telegram_proxy_var.get().strip()
+            notifier = TelegramNotifier(enabled=True, chat_id=chat_id, proxy=proxy)
             ok, msg = notifier.send_test_notification()
 
             def _update_ui():
