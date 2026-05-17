@@ -116,6 +116,8 @@ class CheckerEngine:
 
         config_snapshot = self._build_config_snapshot()
         self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
+        self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
+        self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
         # 在子线程中运行检查
         try:
@@ -154,6 +156,8 @@ class CheckerEngine:
 
         config_snapshot = self._build_config_snapshot()
         self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
+        self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
+        self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
         try:
             thread = threading.Thread(
@@ -200,6 +204,7 @@ class CheckerEngine:
         try:
             while not self._stop_event.is_set() and round_num < max_rounds:
                 round_num += 1
+                self.wechat.wechat_window = None  # 每轮强制刷新 UIA 缓存，避免脏控件树
                 self._emit_log(f"====== 第 {round_num} 轮检查开始 ======")
                 self._emit_status(f"检查中 - 第{round_num}轮")
 

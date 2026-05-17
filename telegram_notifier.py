@@ -50,6 +50,22 @@ class TelegramNotifier:
     def enabled(self, value: bool):
         self._enabled = value
 
+    @property
+    def chat_id(self) -> str:
+        return self._chat_id
+
+    @chat_id.setter
+    def chat_id(self, value: str):
+        self._chat_id = value
+
+    @property
+    def proxy(self) -> str:
+        return self._proxy
+
+    @proxy.setter
+    def proxy(self, value: str):
+        self._proxy = value.strip() if value else ""
+
     # ---- 公共方法 ----
 
     def send_abnormal_notification(self, wechat_id: str, reason: str) -> bool | None:

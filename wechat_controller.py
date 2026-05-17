@@ -667,6 +667,19 @@ class WeChatController:
             self._emit_log(f"激活微信窗口失败: {e}", "error")
             return False
 
+    def _ensure_foreground(self):
+        """确保微信窗口在前台，不在则尝试激活"""
+        if not self.wechat_window:
+            return False
+        try:
+            hwnd = self.wechat_window.NativeWindowHandle
+            if hwnd and ctypes.windll.user32.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+        self._emit_log("微信窗口不在前台，尝试重新激活...", "warn")
+        return self.activate_window()
+
     # ==================== 搜索操作 ====================
 
     def focus_search_box(self):
@@ -679,12 +692,10 @@ class WeChatController:
             return False
 
         try:
-            # 核实微信窗口仍在最前，否则 Ctrl+F 发到错误窗口
-            if self.wechat_window:
-                hwnd = self.wechat_window.NativeWindowHandle
-                if hwnd and ctypes.windll.user32.GetForegroundWindow() != hwnd:
-                    self._emit_log("微信窗口不在前台，无法聚焦搜索框", "error")
-                    return False
+            # 确保微信窗口在前台，否则 Ctrl+F 发到错误窗口
+            if not self._ensure_foreground():
+                self._emit_log("无法将微信窗口置顶，放弃聚焦搜索框", "error")
+                return False
 
             _send_hotkey(_VK["ctrl"], _VK["f"])
             self._sleep(1.5)
@@ -700,6 +711,11 @@ class WeChatController:
         方法A: SendInput 逐字符 → 方法B: 剪贴板 + Ctrl+V（base64 安全编码）
         """
         if not UIA_AVAILABLE:
+            return False
+
+        # 确保微信窗口在前台
+        if not self._ensure_foreground():
+            self._emit_log("无法将微信窗口置顶，放弃输入", "error")
             return False
 
         # 清空搜索框已有内容
@@ -905,6 +921,17 @@ class WeChatController:
                                 break
                         self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
                                        f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'")
+                        # OCR 失败时保存诊断截图，方便跨轮对比排查
+                        if not has_add_button:
+                            try:
+                                import tempfile
+                                debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
+                                os.makedirs(debug_dir, exist_ok=True)
+                                filename = f"popup_fail_{int(time.time())}.png"
+                                img.save(os.path.join(debug_dir, filename))
+                                self._emit_log(f"诊断截图已保存: {debug_dir}\\{filename}")
+                            except Exception:
+                                pass
                 except Exception as e:
                     self._emit_log(f"OCR弹窗检测异常: {e}")
 
@@ -923,13 +950,15 @@ class WeChatController:
             return ("not_found", "")
 
     def close_popup(self):
-        """关闭弹窗 - 找到弹窗 → 激活 → ESC"""
+        """关闭弹窗 - 找到弹窗 → 激活 → ESC → 验证关闭，最多重试3次"""
         if not UIA_AVAILABLE:
             return
-        try:
-            # 找到弹窗窗口
+        popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
+
+        for attempt in range(3):
+            # 查找弹窗
             popup = None
-            for title in ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]:
+            for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
                     if w.Exists(maxSearchSeconds=0.5):
@@ -938,27 +967,34 @@ class WeChatController:
                 except Exception:
                     continue
 
+            if popup is None:
+                logger.debug("弹窗已关闭(ESC)")
+                return  # 弹窗已关闭
+
             # 激活弹窗使其能接收 ESC 按键
-            if popup:
-                try:
-                    hwnd = popup.NativeWindowHandle
-                    if hwnd:
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        self._sleep(0.2)
-                except Exception:
-                    pass
+            try:
+                hwnd = popup.NativeWindowHandle
+                if hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.2)
+            except Exception:
+                pass
 
             # 发送 ESC 关闭弹窗
             _press_key(_VK["escape"])
             self._sleep(0.5)
-            logger.debug("已关闭弹窗(ESC)")
-        except Exception as e:
-            logger.error(f"关闭弹窗失败: {e}")
+
+        logger.warning("弹窗关闭失败(3次重试后仍存在)")
 
     def clear_search(self):
         """清空搜索框"""
         if not UIA_AVAILABLE:
             return
+
+        # 确保微信窗口在前台
+        if not self._ensure_foreground():
+            return
+
         try:
             _send_hotkey(_VK["ctrl"], _VK["a"])
             self._sleep(0.2)
