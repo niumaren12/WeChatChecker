@@ -12,16 +12,16 @@ DEFAULT_CONFIG = {
     "wechat_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",
     "ids_file": "wechat_ids.txt",
     "batch_size": 9,
-    "batch_interval_min": 30,
-    "batch_interval_max": 50,
+    "batch_interval_min": 20,
+    "batch_interval_max": 30,
     "account_interval_min": 3,
     "account_interval_max": 5,
     "max_rounds": 100,
     "sound_enabled": True,
 
     # Telegram 通知配置
-    "telegram_enabled": False,
-    "telegram_chat_id": "-1003974347005",
+    "telegram_enabled": True,
+    "telegram_chat_id": "-5089015384",
     "telegram_proxy": "",
     "telegram_message_template": (
         "🚨 异常账号告警\n"

@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-微信账号状态检查工具 — 批量检查微信号是否正常。基于 tkinter 的 GUI 桌面应用，仅支持 Windows。
+微信账号状态检查工具 v1.2 — 批量检查微信号是否正常。基于 tkinter 的 GUI 桌面应用，仅支持 Windows。
 
 ## 运行环境
 
-- Windows 10+，微信 PC 客户端 (4.x)
+- Windows 10+，微信 PC 客户端 (4.x，进程名 Weixin.exe)
 - Python 3.12+
 
 ## 常用命令
@@ -174,6 +174,20 @@ OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
 
 - `activate_window`: `SetForegroundWindow` 后用 `GetForegroundWindow()` 验证，失败自动重试
 - `focus_search_box`: 发 Ctrl+F 前检查 `GetForegroundWindow() == 微信 hwnd`
+
+## 异常通知面板与警告音
+
+发现异常账号时，GUI 右下角出现红色异常通知面板（可滚动），不阻塞检查循环。同时触发声音警报。
+
+- **异常记录**: `AbnormalEntry` dataclass（`wechat_id`, `reason`, `timestamp`, `telegram_sent`），字典去重（同号多次异常只保留最新）
+- **声音警报**: `winsound.Beep(1000, 200)` 每 1.5s 循环，直到用户点击"停止声音"或面板清空
+- **竞态防护**: `_beep_stopped` 标志位防止 `_stop_beep()` 和 `_beep_loop()` 之间的 race condition（停止后 `after` 回调可能仍在队列中）
+- **静音**: 用户点"停止声音"设 `_sound_muted = True`，面板清空自动恢复
+- **已修复**: 每条异常记录旁有"已修复"按钮，点击后从字典移除并刷新面板
+
+## 运行时环境自检
+
+`_check_runtime_env()` 在 GUI 启动 500ms 后执行（`root.after(500, ...)`）：调用 `tesseract --version` 验证 OCR 引擎可用。不可用时在日志区显示红色警告。Tesseract 子进程调用使用 `_no_window_popen()` 辅助函数（`subprocess.Popen` + `CREATE_NO_WINDOW` 标志），避免检查期间弹出命令行窗口。
 
 ## CI/CD
 

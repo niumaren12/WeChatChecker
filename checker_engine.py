@@ -378,22 +378,21 @@ class CheckerEngine:
             self._emit_log("检查已停止")
 
     def _wait_with_stop(self, seconds, countdown_label=""):
-        """等待指定秒数，可被停止/暂停打断。暂停时倒计时冻结。"""
-        interval = 0.5  # 每 0.5 秒检查一次信号
+        """等待指定秒数，可被停止/暂停打断。暂停时倒计时继续，归零后等待继续。"""
+        interval = 0.5
         elapsed = 0
         last_reported = -1
         while elapsed < seconds and not self._stop_event.is_set():
-            # 检查暂停信号
-            if self._pause_event.is_set():
-                self._emit_status("已暂停")
-                self._pause_event.wait()  # 阻塞到恢复
-                if self._stop_event.is_set():
-                    return
-                self._emit_status("检查中...")
-
             time.sleep(min(interval, seconds - elapsed))
             elapsed += interval
             remaining = max(0, seconds - elapsed)
+            if self._pause_event.is_set():
+                self._emit_status(f"已暂停（剩余 {int(remaining)}秒）")
             if self.on_countdown and countdown_label and int(remaining) != last_reported:
                 self.on_countdown(remaining, countdown_label)
                 last_reported = int(remaining)
+
+        # 倒计时结束，暂停中则等待继续
+        while self._pause_event.is_set() and not self._stop_event.is_set():
+            self._emit_status("等待继续...")
+            self._pause_event.wait(timeout=1.0)
