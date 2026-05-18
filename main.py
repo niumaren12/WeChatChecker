@@ -1367,10 +1367,10 @@ class WeChatCheckerApp:
                 if ip:
                     self.ip_current_label.config(text=ip, foreground="#1976d2")
                 else:
-                    self.ip_current_label.config(
-                        text=f"获取失败: {ip_err}" if ip_err else "未知",
-                        foreground="#c62828"
-                    )
+                    # 网络不通时用中性提示，不显示红色报错（api.ipify.org 国内需代理）
+                    err_text = "需代理" if ip_err and "网络错误" in str(ip_err) else (f"获取失败: {ip_err}" if ip_err else "未知")
+                    fg = "#999999" if "网络错误" in str(ip_err or "") else "#c62828"
+                    self.ip_current_label.config(text=err_text, foreground=fg)
                 if node_name:
                     self.ip_node_label.config(text=node_name, foreground="#666666")
                 else:
