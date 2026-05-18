@@ -60,7 +60,7 @@ class WeChatCheckerApp:
         # 创建主窗口
         self.root = tk.Tk()
         self.root.title(f"{self.APP_NAME} {self.APP_VERSION}")
-        self.root.geometry("780x880")
+        self.root.geometry("820x780")
         self.root.minsize(640, 700)
 
         # 设置图标（内置 Base64 图标）
@@ -173,9 +173,19 @@ class WeChatCheckerApp:
         ttk.Button(path_row, text="浏览", width=6,
                    command=self._browse_wechat_path).pack(side=tk.RIGHT)
 
-        # ---- IP自动切换面板 ----
-        ip_frame = ttk.LabelFrame(main_frame, text="IP自动切换", padding=8)
-        ip_frame.pack(fill=tk.X, pady=(0, 8))
+        # ---- 左右分栏主区域：微信号列表(左) | IP切换+Telegram(右) ----
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        left_col = ttk.Frame(content_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        right_col = ttk.Frame(content_frame)
+        right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+
+        # ---- IP自动切换面板（右栏） ----
+        ip_frame = ttk.LabelFrame(right_col, text="IP自动切换", padding=8)
+        ip_frame.pack(fill=tk.X, pady=(0, 6))
 
         # ① 顶部 — 实时IP显示条
         ip_top = ttk.Frame(ip_frame)
@@ -234,13 +244,13 @@ class WeChatCheckerApp:
         ttk.Label(self.ip_clash_row, text="Clash地址:").pack(side=tk.LEFT)
         self.ip_clash_url_var = tk.StringVar(value="http://127.0.0.1:9090")
         ttk.Entry(
-            self.ip_clash_row, textvariable=self.ip_clash_url_var, width=22
-        ).pack(side=tk.LEFT, padx=(4, 12))
+            self.ip_clash_row, textvariable=self.ip_clash_url_var, width=18
+        ).pack(side=tk.LEFT, padx=(4, 10))
 
         ttk.Label(self.ip_clash_row, text="代理组:").pack(side=tk.LEFT)
         self.ip_clash_group_var = tk.StringVar(value="Proxy")
         ttk.Entry(
-            self.ip_clash_row, textvariable=self.ip_clash_group_var, width=12
+            self.ip_clash_row, textvariable=self.ip_clash_group_var, width=10
         ).pack(side=tk.LEFT, padx=(4, 0))
 
         # 命令配置行
@@ -249,7 +259,7 @@ class WeChatCheckerApp:
         ttk.Label(self.ip_cmd_row, text="切换命令:").pack(side=tk.LEFT)
         self.ip_command_var = tk.StringVar()
         ttk.Entry(
-            self.ip_cmd_row, textvariable=self.ip_command_var, width=45
+            self.ip_cmd_row, textvariable=self.ip_command_var, width=30
         ).pack(side=tk.LEFT, padx=(4, 6))
         ttk.Button(
             self.ip_cmd_row, text="查看模板", width=8,
@@ -284,7 +294,7 @@ class WeChatCheckerApp:
         ttk.Label(ip_param, text="验证地址:").pack(side=tk.LEFT)
         self.ip_verify_url_var = tk.StringVar(value="https://api.ipify.org")
         ttk.Entry(
-            ip_param, textvariable=self.ip_verify_url_var, width=24
+            ip_param, textvariable=self.ip_verify_url_var, width=20
         ).pack(side=tk.LEFT, padx=(4, 0))
 
         # 测试按钮 + 状态
@@ -347,17 +357,13 @@ class WeChatCheckerApp:
         # 初始显示：命令配置行默认隐藏（clash模式）
         self.ip_cmd_row.pack_forget()
 
-        # ---- 左右分栏：微信号列表（左） + Telegram（右） ----
-        split_frame = ttk.Frame(main_frame)
-        split_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        # ---- 左栏：微信号列表 ----
+        ids_frame = ttk.LabelFrame(left_col, text="微信号列表", padding=6)
+        ids_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 左侧：微信号列表
-        ids_frame = ttk.LabelFrame(split_frame, text="微信号列表", padding=6)
-        ids_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # 右侧：Telegram 通知配置
-        telegram_frame = ttk.LabelFrame(split_frame, text="📨 Telegram 通知", padding=8)
-        telegram_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        # ---- 右栏：Telegram 通知配置（IP面板下方） ----
+        telegram_frame = ttk.LabelFrame(right_col, text="📨 Telegram 通知", padding=8)
+        telegram_frame.pack(fill=tk.X, pady=(6, 0))
 
         self.telegram_enabled_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -392,7 +398,7 @@ class WeChatCheckerApp:
         listbox_frame.pack(fill=tk.BOTH, expand=True)
 
         self.ids_listbox = tk.Listbox(
-            listbox_frame, height=5, selectmode=tk.EXTENDED,
+            listbox_frame, height=8, selectmode=tk.EXTENDED,
             font=("Consolas", 9), bg="#f5f5f5", relief=tk.SUNKEN,
         )
         # 拖拽排序绑定
@@ -481,48 +487,45 @@ class WeChatCheckerApp:
             sound_row, text="🔊 异常时声音播报", variable=self.sound_enabled_var
         ).pack(side=tk.LEFT)
 
-        # ---- 控制按钮区域 ----
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=(0, 8))
+        # ---- 控制按钮 + 进度条（同行） ----
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=(0, 6))
 
         self.start_btn = ttk.Button(
-            btn_frame, text="▶ 开始检查", width=14,
+            control_frame, text="▶ 开始检查", width=14,
             command=self._start_check
         )
         self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.pause_btn = ttk.Button(
-            btn_frame, text="⏸ 暂停", width=14,
+            control_frame, text="⏸ 暂停", width=14,
             command=self._on_pause_resume, state=tk.DISABLED
         )
         self.pause_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.stop_btn = ttk.Button(
-            btn_frame, text="■ 停止检查", width=14,
+            control_frame, text="■ 停止检查", width=14,
             command=self._stop_check, state=tk.DISABLED
         )
         self.stop_btn.pack(side=tk.LEFT)
 
-        # 状态标签
+        # 进度条（按钮右侧）
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(
+            control_frame, variable=self.progress_var,
+            maximum=100, length=300
+        )
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 8))
+
+        self.progress_label = ttk.Label(control_frame, text="", width=16)
+        self.progress_label.pack(side=tk.LEFT)
+
+        # 状态标签（最右）
         self.status_label = ttk.Label(
-            btn_frame, text="状态: 空闲", font=("微软雅黑", 10),
+            control_frame, text="状态: 空闲", font=("微软雅黑", 10),
             foreground="#666666"
         )
         self.status_label.pack(side=tk.RIGHT)
-
-        # 进度条
-        progress_frame = ttk.Frame(main_frame)
-        progress_frame.pack(fill=tk.X, pady=(0, 6))
-
-        self.progress_var = tk.DoubleVar(value=0)
-        self.progress_bar = ttk.Progressbar(
-            progress_frame, variable=self.progress_var,
-            maximum=100, length=600
-        )
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.progress_label = ttk.Label(progress_frame, text="", width=16)
-        self.progress_label.pack(side=tk.RIGHT, padx=(8, 0))
 
         # ---- 异常通知面板 ----
         self.abnormal_frame = ttk.LabelFrame(
@@ -600,7 +603,7 @@ class WeChatCheckerApp:
 
         self.log_text = tk.Text(
             log_text_frame,
-            height=8,
+            height=10,
             wrap=tk.WORD,
             font=("Consolas", 9),
             bg="#1e1e1e",
