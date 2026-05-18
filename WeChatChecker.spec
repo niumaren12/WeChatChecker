@@ -23,6 +23,7 @@ a = Analysis(
         'psutil',
         'uiautomation',
         'telegram_notifier',
+        'ip_switcher',
     ],
     hookspath=['hooks'],
     hooksconfig={},

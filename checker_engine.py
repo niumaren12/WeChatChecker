@@ -44,6 +44,7 @@ class CheckerEngine:
         self.on_progress = None      # func(current, total, batch_info)
         self.on_abnormal = None      # func(wechat_id, reason, telegram_sent)
         self.on_countdown = None     # func(remaining_seconds, label)
+        self.on_ip_changed = None    # func(old_ip, new_ip, node_name, delay, success)
 
         # 当前检查进度
         self.current_batch = 0
@@ -84,7 +85,35 @@ class CheckerEngine:
             "account_interval_min": self.config.get("account_interval_min", 3),
             "account_interval_max": self.config.get("account_interval_max", 5),
             "max_rounds": self.config.get("max_rounds", 100),
+            # IP 切换配置
+            "ip_switch_enabled": self.config.get("ip_switch_enabled", False),
+            "ip_switch_method": self.config.get("ip_switch_method", "clash"),
+            "ip_switch_clash_url": self.config.get("ip_switch_clash_url", "http://127.0.0.1:9090"),
+            "ip_switch_clash_group": self.config.get("ip_switch_clash_group", "Proxy"),
+            "ip_switch_command": self.config.get("ip_switch_command", ""),
+            "ip_switch_batch_count": self.config.get("ip_switch_batch_count", 3),
+            "ip_switch_timeout": self.config.get("ip_switch_timeout", 30),
+            "ip_switch_verify_url": self.config.get("ip_switch_verify_url", "https://api.ipify.org"),
+            "ip_switch_advance_seconds": self.config.get("ip_switch_advance_seconds", 300),
         }
+
+    def _create_ip_switcher(self, cfg):
+        """根据配置快照创建IP切换器实例，未启用返回None"""
+        if not cfg.get("ip_switch_enabled"):
+            return None
+        try:
+            from ip_switcher import IPSwitcher
+            return IPSwitcher(
+                method=cfg.get("ip_switch_method", "clash"),
+                clash_url=cfg.get("ip_switch_clash_url", "http://127.0.0.1:9090"),
+                proxy_group=cfg.get("ip_switch_clash_group", "Proxy"),
+                command=cfg.get("ip_switch_command", ""),
+                verify_url=cfg.get("ip_switch_verify_url", "https://api.ipify.org"),
+                timeout=cfg.get("ip_switch_timeout", 30),
+            )
+        except Exception as e:
+            self._emit_log(f"创建IP切换器失败: {e}", "error")
+            return None
 
     def stop(self):
         """请求停止检查"""
@@ -146,11 +175,14 @@ class CheckerEngine:
         self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
         self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
+        # 创建 IP 切换器（如果启用）
+        ip_switcher = self._create_ip_switcher(config_snapshot)
+
         # 在子线程中运行检查
         try:
             thread = threading.Thread(
                 target=self._run_check_loop,
-                args=(ids, config_snapshot),
+                args=(ids, config_snapshot, ip_switcher),
                 daemon=True,
                 name="CheckerThread",
             )
@@ -186,10 +218,13 @@ class CheckerEngine:
         self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
         self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
+        # 创建 IP 切换器（如果启用）
+        ip_switcher = self._create_ip_switcher(config_snapshot)
+
         try:
             thread = threading.Thread(
                 target=self._run_check_loop,
-                args=(ids_list, config_snapshot),
+                args=(ids_list, config_snapshot, ip_switcher),
                 daemon=True,
                 name="CheckerThread",
             )
@@ -201,7 +236,7 @@ class CheckerEngine:
 
         self._emit_log(f"检查启动，共 {len(ids_list)} 个微信号")
 
-    def _run_check_loop(self, all_ids, cfg):
+    def _run_check_loop(self, all_ids, cfg, ip_switcher=None):
         """
         主检查循环（在子线程中运行）
         支持多轮循环，每批最多 batch_size 个
@@ -209,6 +244,7 @@ class CheckerEngine:
         Args:
             all_ids: 微信号列表
             cfg: 配置快照字典，避免与主线程并发读写
+            ip_switcher: IP切换器实例，None 表示不启用
         """
         batch_size = cfg["batch_size"]
         bi_min = cfg["batch_interval_min"]
@@ -217,9 +253,15 @@ class CheckerEngine:
         ai_max = cfg["account_interval_max"]
         max_rounds = cfg["max_rounds"]
 
+        # IP 切换参数
+        ip_switch_batch_count = cfg.get("ip_switch_batch_count", 3)
+        ip_switch_advance = cfg.get("ip_switch_advance_seconds", 300)
+
         # 初始化 COM（uiautomation 依赖，子线程必须手动初始化）
+        _com_ctypes = None
         try:
             import ctypes
+            _com_ctypes = ctypes
             hr = ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
             if hr < 0:
                 self._emit_log(f"COM 初始化失败: 0x{hr & 0xFFFFFFFF:08X}", "error")
@@ -227,6 +269,7 @@ class CheckerEngine:
             pass
 
         round_num = 0
+        batch_counter = 0  # 累计批次数，跨轮次递增
 
         try:
             while not self._stop_event.is_set() and round_num < max_rounds:
@@ -246,6 +289,10 @@ class CheckerEngine:
                     ai_min = cfg["account_interval_min"]
                     ai_max = cfg["account_interval_max"]
                     max_rounds = cfg["max_rounds"]
+                    ip_switch_batch_count = cfg.get("ip_switch_batch_count", 3)
+                    ip_switch_advance = cfg.get("ip_switch_advance_seconds", 300)
+                    # 重新创建IP切换器
+                    ip_switcher = self._create_ip_switcher(cfg)
                     self._new_cfg = None
 
                 self._emit_log(f"====== 第 {round_num} 轮检查开始 ======")
@@ -332,18 +379,70 @@ class CheckerEngine:
                                 self._wait_with_stop(wait_time, "account")
 
                     total_checked += len(batch)
+                    batch_counter += 1
 
-                    # 批次间等待
+                    # 批次间等待（含IP切换）
                     if batch_idx < len(batches) - 1 and not self._stop_event.is_set():
                         wait_min = random.uniform(bi_min, bi_max)
-                        self._emit_log(
-                            f"本批完成，等待 {wait_min:.1f} 分钟后检查下一批..."
+                        wait_sec = wait_min * 60
+
+                        # 检查是否需要在此批次后切换IP
+                        need_ip_switch = (
+                            ip_switcher is not None
+                            and batch_counter % ip_switch_batch_count == 0
                         )
-                        self._emit_status(
-                            f"等待中 - 第{round_num}轮 下一批 "
-                            f"({wait_min:.0f}分钟后)"
-                        )
-                        self._wait_with_stop(wait_min * 60, f"batch_r{round_num}")
+
+                        if need_ip_switch:
+                            # ----- 三阶段：预等 → 测速切换 → 剩余等待 -----
+                            # 阶段1：先等大部分时间，预留 advance 秒用于测速+切换
+                            pre_wait = max(0, wait_sec - ip_switch_advance)
+                            if pre_wait > 0:
+                                self._emit_log(
+                                    f"本批完成，等待 {pre_wait/60:.1f} 分钟后开始测速切换IP..."
+                                )
+                                self._wait_with_stop(pre_wait, f"batch_r{round_num}")
+
+                            if self._stop_event.is_set():
+                                break
+
+                            # 阶段2：测速 + 切换IP（计时实际耗时）
+                            self._emit_log("开始实时测速所有节点...")
+                            self._emit_status("正在测速节点并切换IP...")
+                            t_start = time.time()
+                            ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
+                                self._stop_event
+                            )
+                            t_elapsed = time.time() - t_start
+
+                            if ok:
+                                self._emit_log(
+                                    f"IP切换成功: {old_ip} → {new_ip} "
+                                    f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
+                                )
+                                if self.on_ip_changed:
+                                    self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
+                            else:
+                                self._emit_log(f"IP切换失败: {msg}", "warn")
+                                if self.on_ip_changed:
+                                    self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
+
+                            # 阶段3：剩余等待（补齐到总间隔时间）
+                            remaining = max(0, wait_sec - pre_wait - t_elapsed)
+                            if remaining > 0:
+                                self._emit_log(
+                                    f"IP切换完成，再等 {remaining/60:.1f} 分钟后继续..."
+                                )
+                                self._wait_with_stop(remaining, f"ip_rest_r{round_num}")
+                        else:
+                            # 正常批次间等待（无IP切换）
+                            self._emit_log(
+                                f"本批完成，等待 {wait_min:.1f} 分钟后检查下一批..."
+                            )
+                            self._emit_status(
+                                f"等待中 - 第{round_num}轮 下一批 "
+                                f"({wait_min:.0f}分钟后)"
+                            )
+                            self._wait_with_stop(wait_sec, f"batch_r{round_num}")
 
                 # 一轮完成
                 if not self._stop_event.is_set():
@@ -373,6 +472,12 @@ class CheckerEngine:
             self._emit_log(traceback.format_exc(), "error")
 
         finally:
+            # 释放 COM
+            if _com_ctypes is not None:
+                try:
+                    _com_ctypes.windll.ole32.CoUninitialize()
+                except Exception:
+                    pass
             self._running = False
             self._emit_status("已停止" if self._stop_event.is_set() else "已完成")
             self._emit_log("检查已停止")
@@ -380,12 +485,16 @@ class CheckerEngine:
     def _wait_with_stop(self, seconds, countdown_label=""):
         """等待指定秒数，可被停止/暂停打断。暂停时倒计时继续，归零后等待继续。"""
         interval = 0.5
-        elapsed = 0
+        start = time.monotonic()
         last_reported = -1
-        while elapsed < seconds and not self._stop_event.is_set():
-            time.sleep(min(interval, seconds - elapsed))
-            elapsed += interval
-            remaining = max(0, seconds - elapsed)
+        while True:
+            real_elapsed = time.monotonic() - start
+            if real_elapsed >= seconds or self._stop_event.is_set():
+                break
+            time.sleep(min(interval, seconds - real_elapsed))
+            # sleep 后重新计算实际经过时间
+            real_elapsed = time.monotonic() - start
+            remaining = max(0, seconds - real_elapsed)
             if self._pause_event.is_set():
                 self._emit_status(f"已暂停（剩余 {int(remaining)}秒）")
             if self.on_countdown and countdown_label and int(remaining) != last_reported:

@@ -19,6 +19,17 @@ DEFAULT_CONFIG = {
     "max_rounds": 100,
     "sound_enabled": True,
 
+    # IP 自动切换配置
+    "ip_switch_enabled": False,
+    "ip_switch_method": "clash",              # "clash" 或 "command"
+    "ip_switch_clash_url": "http://127.0.0.1:9090",
+    "ip_switch_clash_group": "Proxy",         # Clash 代理组名
+    "ip_switch_command": "",                  # 自定义命令（method=command时使用）
+    "ip_switch_batch_count": 3,               # 每N批后切换
+    "ip_switch_timeout": 30,                  # 切换超时(秒)
+    "ip_switch_verify_url": "https://api.ipify.org",
+    "ip_switch_advance_seconds": 300,         # 提前多少秒开始测速+切换（默认5分钟）
+
     # Telegram 通知配置
     "telegram_enabled": True,
     "telegram_chat_id": "-5089015384",
@@ -109,6 +120,39 @@ class ConfigManager:
             errs.append("账号间隔最小值不能为负数")
         if not isinstance(ai_max, (int, float)) or ai_max < ai_min:
             errs.append("账号间隔最大值必须大于等于最小值")
+
+        # IP 切换配置校验（仅启用时）
+        if self.get("ip_switch_enabled", False):
+            method = self.get("ip_switch_method", "clash")
+            if method == "clash":
+                clash_url = self.get("ip_switch_clash_url", "")
+                if not clash_url or not isinstance(clash_url, str):
+                    errs.append("Clash API地址不能为空")
+                clash_group = self.get("ip_switch_clash_group", "")
+                if not clash_group or not isinstance(clash_group, str):
+                    errs.append("Clash代理组名不能为空")
+            elif method == "command":
+                cmd = self.get("ip_switch_command", "")
+                if not cmd or not isinstance(cmd, str):
+                    errs.append("IP切换命令不能为空")
+            else:
+                errs.append(f"未知的IP切换方式: {method}")
+
+            batch_count = self.get("ip_switch_batch_count", 3)
+            if not isinstance(batch_count, int) or batch_count < 1:
+                errs.append("IP切换批次间隔必须为大于0的整数")
+
+            timeout = self.get("ip_switch_timeout", 30)
+            if not isinstance(timeout, (int, float)) or timeout < 5:
+                errs.append("IP切换超时时间必须 >= 5秒")
+
+            verify_url = self.get("ip_switch_verify_url", "")
+            if not isinstance(verify_url, str) or not verify_url.startswith(("http://", "https://")):
+                errs.append("IP验证地址必须以 http:// 或 https:// 开头")
+
+            advance = self.get("ip_switch_advance_seconds", 300)
+            if not isinstance(advance, (int, float)) or advance < 10:
+                errs.append("IP切换提前测速时间必须 >= 10秒")
 
         if errs:
             return False, "；".join(errs)
