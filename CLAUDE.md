@@ -10,6 +10,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Windows 10+，微信 PC 客户端 (4.x，进程名 Weixin.exe)
 - Python 3.12+
+- Mac 开发机通过 SSH (`ssh win`) 连接 Windows 测试机（网线直连 192.168.100.2）
+
+## 开发流程
+
+由于项目依赖 Windows 专用 API（`win32gui`、`uiautomation`、`winsound`），Mac 上无法直接运行或打包。标准流程：
+
+1. **Mac 上改代码** → `git commit` + `git push`
+2. **GitHub Actions 自动构建**（`build.yml`，windows-latest）
+3. **下载产物** → `gh run download <id>`
+4. **传到 Windows 测试** → `scp -r dist/WeChatChecker-Windows/* win:"Desktop/WeChatChecker/"`
+5. **SSH 远程控制** → `ssh win` 执行命令、查看日志
+
+### SSH 配置（~/.ssh/config）
+```
+Host win
+    HostName 192.168.100.2
+    User apple
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+```
+
+- 密钥：`~/.ssh/id_ed25519`
+- Windows 端公钥在 `C:\ProgramData\ssh\administrators_authorized_keys`（apple 是管理员）
+- 新终端需执行 `ssh-add ~/.ssh/id_ed25519` 加载密钥到 agent
 
 ## 常用命令
 
@@ -39,9 +63,10 @@ Tesseract OCR 引擎的打包流程：
 
 ```
 main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
-  ├── checker_engine.py # 检查引擎（CheckerEngine）— 子线程循环/批次/进度，start_with_ids() 接收列表
+  ├── checker_engine.py # 检查引擎（CheckerEngine）— 子线程循环/批次/进度/IP切换，start_with_ids() 接收列表
   │   ├── wechat_controller.py  # 微信自动化（WeChatController）
-  │   └── telegram_notifier.py  # Telegram Bot 通知（urllib，无外部依赖）
+  │   ├── telegram_notifier.py  # Telegram Bot 通知（urllib，无外部依赖）
+  │   └── ip_switcher.py        # IP自动切换（Clash API测速选最快节点 / 自定义命令，纯标准库）
   ├── config_manager.py # 配置读写（config.json）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 
@@ -60,7 +85,79 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - `mss` + `Pillow` + `pytesseract` — OCR 文字识别链路
 - Tesseract 引擎 — 系统级依赖，CI 中通过 choco 安装后打入 exe，运行时自动解压
 
-**数据流**: GUI 微信号列表（支持拖拽排序）→ `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → `WeChatController.check_single_account()` → 激活窗口（验证前景）→ Ctrl+F 搜索（检查窗口置顶）→ 输入微信号 → OCR 识别下拉菜单（多关键字回退）并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内文字（多关键字回退）→ 回调 GUI（含 Telegram 通知状态）。
+**数据流**: GUI 微信号列表（支持拖拽排序）→ `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → 每批后可触发IP切换 → `WeChatController.check_single_account()` → 激活窗口（验证前景）→ Ctrl+F 搜索（检查窗口置顶）→ 输入微信号 → OCR 识别下拉菜单（多关键字回退）并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内文字（多关键字回退）→ 回调 GUI（含 Telegram 通知状态）。
+
+## GUI 布局（左右分栏）
+
+```
+┌────────────────────────────────────────────┐
+│  标题                                      │
+├────────────────────────────────────────────┤
+│  配置 (微信路径、参数、声音)               │
+├──────────────┬─────────────────────────────┤
+│  左栏        │  右栏                       │
+│  Telegram通知│  IP自动切换 (当前IP/配置)    │
+│  (上)        │  切换记录                   │
+│  微信号列表  │  异常账号面板               │
+│  (下)        │                             │
+├──────────────┴─────────────────────────────┤
+│  按钮行 + 进度条 + 状态                    │
+├────────────────────────────────────────────┤
+│  日志 (全宽，独占剩余垂直空间)             │
+└────────────────────────────────────────────┘
+```
+
+- 窗口默认 820x780，Canvas+Scrollbar 全局滚动
+- 左栏 `fill=BOTH, expand=True`，右栏 `fill=Y`（固定宽度）
+- 日志 `fill=BOTH, expand=True`，独占底部所有剩余空间
+- 按钮、进度条、状态标签合并到同一行
+
+## IP 自动切换（ip_switcher.py）
+
+支持两种切换方式，纯 Python 标准库实现，无外部依赖。
+
+### Clash API 方式
+- 通过 Clash REST API (`http://127.0.0.1:9090`) 获取代理组节点列表
+- `ThreadPoolExecutor` 并发测速所有候选节点（最多10并发）
+- 按延迟升序排列，逐个尝试切换直到出口IP真正变化
+- 排除 DIRECT、REJECT 等特殊类型节点
+- 切换后等待 2s 建立连接，验证新 IP 后再继续
+
+### 自定义命令方式
+- 执行任意 shell 命令切换 IP（如拨号重连脚本）
+- 命令执行后等待 5s，轮询验证 IP 变化
+- 带超时保护 (`timeout` 参数)
+
+### 核心方法
+| 方法 | 说明 |
+|------|------|
+| `get_current_ip()` | 访问 `verify_url`（默认 api.ipify.org）获取公网IP，3次重试 |
+| `get_clash_info()` | 获取代理组当前节点和所有候选节点 |
+| `test_node_delay(node)` | 单节点延迟测试（通过 Clash /proxies/{name}/delay） |
+| `switch_ip(stop_event)` | 主入口，返回 `(ok, msg, old_ip, new_ip, node_name, delay)` |
+
+### IP 切换触发时机
+- 引擎每 N 批完成后自动触发（`ip_switch_batch_count` 配置）
+- 提前 `ip_switch_advance_seconds` 秒测速，确保切换不耽误下一批
+- GUI 提供"立即切换(测试)"按钮手动触发
+- 切换记录保留最近 50 条，显示在右栏 IP 面板下方
+
+### IP 切换配置项
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `ip_switch_enabled` | bool | `false` | 总开关 |
+| `ip_switch_method` | str | `"clash"` | 切换方式：clash / command |
+| `ip_switch_clash_url` | str | `"http://127.0.0.1:9090"` | Clash API 地址 |
+| `ip_switch_clash_group` | str | `"Proxy"` | 代理组名称 |
+| `ip_switch_command` | str | `""` | 自定义切换命令 |
+| `ip_switch_batch_count` | int | `3` | 每 N 批后切换 |
+| `ip_switch_timeout` | int | `30` | 命令超时(秒) |
+| `ip_switch_advance_seconds` | int | `300` | 提前测速(秒) |
+| `ip_switch_verify_url` | str | `"https://api.ipify.org"` | IP验证地址 |
+
+### IP 获取失败的 UI 处理
+- `api.ipify.org` 在国内需代理，网络不通时显示灰色"需代理"而非红色报错
+- 主窗口启动 1s 后自动获取当前 IP 和节点名，刷新按钮可手动重试
 
 ## 关键：微信 PC 4.x 是 CEF/Chromium 应用（进程名 Weixin.exe）
 
@@ -135,7 +232,7 @@ OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
 
 - **模块**: `telegram_notifier.py`，使用标准库 `urllib.request`，无外部依赖
 - **Token**: 硬编码在 `telegram_notifier.py` 顶部 `TELEGRAM_BOT_TOKEN` 常量
-- **Chat ID**: 在 GUI 右侧 Telegram 面板中配置，持久化到 `config.json` 的 `telegram_chat_id`
+- **Chat ID**: 在 GUI 左栏顶部 Telegram 面板中配置，持久化到 `config.json` 的 `telegram_chat_id`
 - **代理**: 可选，在 GUI 中填写 `http://127.0.0.1:7890` 格式的代理地址。不填则走系统代理（`urllib` 默认行为）
 - **限流**: 两次发送最小间隔 1 秒，防止 Telegram API 429
 - **线程安全**: `threading.Lock` 保护发送状态
@@ -177,7 +274,7 @@ OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
 
 ## 异常通知面板与警告音
 
-发现异常账号时，GUI 右下角出现红色异常通知面板（可滚动），不阻塞检查循环。同时触发声音警报。
+发现异常账号时，GUI 右栏底部出现红色异常通知面板（可滚动），不阻塞检查循环。同时触发声音警报。
 
 - **异常记录**: `AbnormalEntry` dataclass（`wechat_id`, `reason`, `timestamp`, `telegram_sent`），字典去重（同号多次异常只保留最新）
 - **声音警报**: `winsound.Beep(1000, 200)` 每 1.5s 循环，直到用户点击"停止声音"或面板清空
