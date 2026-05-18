@@ -357,13 +357,12 @@ class WeChatCheckerApp:
         # 初始显示：命令配置行默认隐藏（clash模式）
         self.ip_cmd_row.pack_forget()
 
-        # ---- 左栏：微信号列表 ----
+        # ---- 左栏：Telegram 通知（上）+ 微信号列表（下） ----
+        telegram_frame = ttk.LabelFrame(left_col, text="📨 Telegram 通知", padding=8)
+        telegram_frame.pack(fill=tk.X, pady=(0, 6))
+
         ids_frame = ttk.LabelFrame(left_col, text="微信号列表", padding=6)
         ids_frame.pack(fill=tk.BOTH, expand=True)
-
-        # ---- 右栏：Telegram 通知配置（IP面板下方） ----
-        telegram_frame = ttk.LabelFrame(right_col, text="📨 Telegram 通知", padding=8)
-        telegram_frame.pack(fill=tk.X, pady=(6, 0))
 
         self.telegram_enabled_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -398,7 +397,7 @@ class WeChatCheckerApp:
         listbox_frame.pack(fill=tk.BOTH, expand=True)
 
         self.ids_listbox = tk.Listbox(
-            listbox_frame, height=8, selectmode=tk.EXTENDED,
+            listbox_frame, height=5, selectmode=tk.EXTENDED,
             font=("Consolas", 9), bg="#f5f5f5", relief=tk.SUNKEN,
         )
         # 拖拽排序绑定
@@ -527,11 +526,11 @@ class WeChatCheckerApp:
         )
         self.status_label.pack(side=tk.RIGHT)
 
-        # ---- 异常通知面板 ----
+        # ---- 右栏：异常通知面板（IP面板下方） ----
         self.abnormal_frame = ttk.LabelFrame(
-            main_frame, text="⚠ 异常账号 (0)", padding=4
+            right_col, text="⚠ 异常账号 (0)", padding=4
         )
-        self.abnormal_frame.pack(fill=tk.X, pady=(0, 6))
+        self.abnormal_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
 
         abnormal_canvas_frame = ttk.Frame(self.abnormal_frame)
         abnormal_canvas_frame.pack(fill=tk.BOTH, expand=True)
