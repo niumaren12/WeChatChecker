@@ -60,8 +60,8 @@ class WeChatCheckerApp:
         # 创建主窗口
         self.root = tk.Tk()
         self.root.title(f"{self.APP_NAME} {self.APP_VERSION}")
-        self.root.geometry("720x820")
-        self.root.minsize(640, 760)
+        self.root.geometry("780x880")
+        self.root.minsize(640, 700)
 
         # 设置图标（内置 Base64 图标）
         self._set_icon()
@@ -118,9 +118,38 @@ class WeChatCheckerApp:
 
     def _build_ui(self):
         """构建界面元素"""
-        # 主框架 + 内边距
-        main_frame = ttk.Frame(self.root, padding=12)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # ---- 滚动容器（Canvas + Scrollbar） ----
+        canvas = tk.Canvas(self.root, highlightthickness=0, bg="#f0f0f0")
+        scrollbar = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=canvas.yview)
+
+        # 主框架（内边距由 main_frame 自身管理）
+        main_frame = ttk.Frame(canvas, padding=12)
+
+        # 将 main_frame 放入 Canvas
+        main_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        self._main_window_id = canvas.create_window(
+            (0, 0), window=main_frame, anchor=tk.NW, tags=("main",)
+        )
+
+        def _on_canvas_resize(event):
+            """Canvas 宽度变化时，同步 main_frame 宽度"""
+            canvas.itemconfig("main", width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_resize)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 鼠标滚轮支持（canvas + root 双重绑定，覆盖所有区域）
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        self.root.bind("<MouseWheel>", _on_mousewheel)  # 全窗口滚轮
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # ---- 第一行：标题 ----
         title_label = ttk.Label(
@@ -281,7 +310,7 @@ class WeChatCheckerApp:
         ip_history_container.pack(fill=tk.BOTH, expand=True)
 
         self.ip_history_canvas = tk.Canvas(
-            ip_history_container, height=80,
+            ip_history_container, height=60,
             bg="#f5f5f5", highlightthickness=0,
         )
         ip_history_scrollbar = ttk.Scrollbar(
@@ -363,7 +392,7 @@ class WeChatCheckerApp:
         listbox_frame.pack(fill=tk.BOTH, expand=True)
 
         self.ids_listbox = tk.Listbox(
-            listbox_frame, height=6, selectmode=tk.EXTENDED,
+            listbox_frame, height=5, selectmode=tk.EXTENDED,
             font=("Consolas", 9), bg="#f5f5f5", relief=tk.SUNKEN,
         )
         # 拖拽排序绑定
@@ -506,7 +535,7 @@ class WeChatCheckerApp:
 
         self.abnormal_canvas = tk.Canvas(
             abnormal_canvas_frame,
-            height=100,
+            height=80,
             bg="#f0f0f0",
             highlightthickness=0,
         )
@@ -571,7 +600,7 @@ class WeChatCheckerApp:
 
         self.log_text = tk.Text(
             log_text_frame,
-            height=10,
+            height=8,
             wrap=tk.WORD,
             font=("Consolas", 9),
             bg="#1e1e1e",
