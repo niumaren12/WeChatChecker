@@ -85,7 +85,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 - `mss` + `Pillow` + `pytesseract` — OCR 文字识别链路
 - Tesseract 引擎 — 系统级依赖，CI 中通过 choco 安装后打入 exe，运行时自动解压
 
-**数据流**: GUI 微信号列表（支持拖拽排序）→ `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → 每批后可触发IP切换 → `WeChatController.check_single_account()` → 激活窗口（验证前景）→ Ctrl+F 搜索（检查窗口置顶）→ 输入微信号 → OCR 识别下拉菜单（多关键字回退）并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内文字（多关键字回退）→ 回调 GUI（含 Telegram 通知状态）。
+**数据流**: GUI 微信号列表（支持拖拽排序）→ `CheckerEngine.start_with_ids(ids)` 子线程循环 → 分批 → 每批后可触发IP切换 → `WeChatController.check_single_account()` → 激活窗口（验证前景）→ Ctrl+F 搜索（检查窗口置顶）→ 输入微信号 → OCR 识别下拉菜单（多关键字回退 + 2次重试）并鼠标点击 → 两级弹窗搜索定位 → OCR 识别弹窗内文字（7关键字回退 + 2次重试）→ 关闭弹窗（两级搜索 + ESC + 鼠标点击备用）→ 清空搜索框 → 回调 GUI（含 Telegram 通知状态）。
 
 ## GUI 布局（左右分栏）
 
@@ -181,7 +181,8 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 2. `focus_search_box`: 先检查 `GetForegroundWindow() == 微信hwnd` → 确认窗口在前台再发 `Ctrl+F` → 等待
 3. `input_wechat_id`: 清空 `Ctrl+A/Delete` → `_type_text` SendInput → 失败回退剪贴板（base64 + PowerShell）
 4. `click_dropdown_item`: 等待 2s → mss 截图搜索框下方（按窗口比例计算区域）→ pytesseract 多关键字回退匹配 `("网络查找", "QQ号", "络找", "查找", "络查")` → `_mouse_click` 点击 → 失败则等 1.5s 同区域重试
-5. `check_popup_status`: 两级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 多关键字回退 `("添加到通讯录", "添加到", "通讯录")`
+5. `check_popup_status(wechat_id)`: 两级弹窗搜索定位 → mss 截图弹窗区域 → pytesseract 7关键字回退 `("添加到通讯录", "添加到", "通讯录", "发消息", "音视频通话", "朋友", "加到")` → 失败则等 1.5s 重试一次（应对弹窗滑入动画）→ 诊断截图文件名含微信号
+6. `close_popup`: 两级搜索弹窗（与 check_popup_status 对齐）→ 激活 → ESC（最多3次）→ 仍失败则鼠标点击窗口左侧关闭 → 两级搜索验证弹窗真的消失
 
 ## OCR 文字识别（Tesseract 内置打包）
 
@@ -196,7 +197,7 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
 
 两个核心场景：
 1. **下拉菜单**：按窗口尺寸比例计算截图区域（左2%顶8% → 左78%顶72%，适配不同DPI/分辨率）→ OCR 多关键字回退 `("网络查找", "QQ号", "络找", "查找", "络查")` → 鼠标点击。第一次失败后等 1.5s 同区域重试（应对下拉加载慢）
-2. **弹窗按钮**：UIA 两级搜索定位弹窗 → 截图弹窗 → OCR 多关键字回退 `("添加到通讯录", "添加到", "通讯录")`
+2. **弹窗按钮**：UIA 两级搜索定位弹窗 → 截图弹窗 → OCR 7关键字回退 `("添加到通讯录", "添加到", "通讯录", "发消息", "音视频通话", "朋友", "加到")` → 第一次失败后等 1.5s 同区域重试（应对弹窗滑入动画导致过渡帧 OCR 失败）。诊断截图存入 `%TEMP%/wechat_ocr_debug/popup_fail_{微信号}_{时间戳}.png`
 
 OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
 1. 逐条目精确匹配 (conf > 15)
@@ -209,12 +210,28 @@ OCR 文字匹配采用 `_find_text_in_entries()` 三级策略：
 
 `WeChatController._gui_log` 由 `CheckerEngine.__init__` 注入为 `_emit_log`，使 wechat_controller 内部日志（如 OCR 识别结果）能同时写 logger 和 GUI。避免了 wechat_controller 直接依赖 tkinter。
 
-## 弹窗搜索（两级）
+## 弹窗搜索与关闭（两级）
 
-微信的"添加朋友"面板不是独立顶层窗口（CEF 渲染），需要两级搜索：
+微信的"添加朋友"面板不是独立顶层窗口（CEF 渲染），需要两级搜索。**`check_popup_status()` 和 `close_popup()` 使用相同的两级搜索逻辑**，确保关闭时能找到 CEF 内部面板：
+
 1. `WindowControl(Name="添加朋友", searchDepth=3)` — 深层独立窗口
 2. `self.wechat_window.PaneControl(Name="添加朋友", searchDepth=10)` — 主窗口内面板
-3. 均未找到则直接返回 `not_found`，不再截图微信主窗口（点击未生效，报错即可）
+3. 均未找到则直接返回 `not_found`（check_popup_status）或认为已关闭（close_popup）
+
+### `close_popup()` 关闭策略（三级递进）
+
+1. **ESC × 3次**：找到弹窗 → 激活 → 发送 ESC → 等 0.5s → 重新搜索验证
+2. **鼠标点击**：3次 ESC 均失败 → 激活微信窗口 → 鼠标点击窗口左侧 15% 位置（聊天列表区域，可关闭右侧面板）
+3. **最终验证**：两级搜索确认弹窗真的消失，否则记录 error 日志
+
+### 历史 Bug：`close_popup()` 只搜 WindowControl 导致连锁失败
+
+早期版本 `close_popup()` 只搜索 WindowControl（Level 1），漏掉了 PaneControl（Level 2）。当弹窗是 CEF 内部面板时：
+- `check_popup_status()` 通过 Level 2 找到了弹窗 → OCR 假阳性 → 返回 abnormal
+- `close_popup()` 只搜 Level 1 → 找不到 → 误以为"弹窗已关闭" → 实际未关闭
+- 下一个号：旧弹窗残留 → UIA 再次搜到同一个旧弹窗 → OCR 同样结果 → **连锁全错**
+
+修复：`close_popup()` 补全 Level 2 PaneControl 搜索 + 鼠标点击备用关闭 + 关闭后验证。
 
 ## 线程模型
 
@@ -357,9 +374,23 @@ CI 流程 (`build.yml`)：
 
 **修复**: 
 - 下拉匹配目标改为多级回退：`("网络查找", "QQ号", "络找", "查找", "络查")`
-- 弹窗匹配改为多级回退：`("添加到通讯录", "添加到", "通讯录")`
+- 弹窗匹配改为7关键字回退 + 2次重试：`("添加到通讯录", "添加到", "通讯录", "发消息", "音视频通话", "朋友", "加到")`
 - "QQ号"是英文数字组合，Tesseract 识别稳定
 - 下拉区域改为同一区域两次重试（等 2s → 失败等 1.5s 再截一次）
+- 弹窗 OCR 同样增加两次重试（间隔 1.5s），应对弹窗滑入动画
+
+### 弹窗假阳性连锁失败（已修复）
+
+**症状**: OCR 将正常号误判为异常（假阳性），且一旦出错，后续所有号都被判为同一种异常。
+
+**根因**: `close_popup()` 只搜索 WindowControl（独立窗口），漏掉了 PaneControl（CEF 内部面板）。当弹窗是内部面板时：`check_popup_status()` 通过 PaneControl 搜索找到了弹窗 → OCR 假阳性 → `close_popup()` 只搜 WindowControl → 找不到 → 误以为已关闭 → 弹窗残留 → 下一个号 UIA 再搜到同一个旧弹窗 → OCR 同样结果 → **连锁全错**。
+
+**修复**:
+- `close_popup()` 补全 Level 2 PaneControl 搜索，与 `check_popup_status()` 对齐
+- ESC 3次关闭失败后，改用鼠标点击微信窗口左侧（聊天列表区域）关闭面板
+- 关闭后两级搜索最终验证弹窗消失
+- `check_popup_status()` 弹窗 OCR 增加第2次重试（间隔 1.5s），关键词从3个扩到7个
+- 诊断截图文件名加入微信号，方便跨轮对比排查
 
 ### OCR 换电脑截图区域偏移
 
