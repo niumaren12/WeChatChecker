@@ -832,16 +832,14 @@ class WeChatController:
 
     # ==================== 弹窗检测 ====================
 
-    def check_popup_status(self):
+    def check_popup_status(self, wechat_id=""):
         """
         检查弹出的"添加朋友"窗口
         OCR 识别弹窗内是否有"添加到通讯录"按钮来判断账号状态。
         两级搜索弹窗：独立窗口 → 主窗口内面板，均未找到则直接报 not_found。
 
-        返回:
-            ("normal", nickname) — 正常
-            ("abnormal", reason) — 异常
-            ("not_found", "")     — 未找到弹窗（点击可能未生效）
+        Args:
+            wechat_id: 当前检查的微信号（用于诊断截图文件名）
         """
         if not UIA_AVAILABLE:
             return ("not_found", "")
@@ -906,34 +904,44 @@ class WeChatController:
                 except Exception as e:
                     self._emit_log(f"无法获取弹窗位置: {e}")
 
-            # OCR 识别弹窗区域，检查是否包含"添加到通讯录"
+            # OCR 识别弹窗区域，检查是否包含正常号特征文字
+            # 多关键词回退 + 2次重试（弹窗可能有滑入动画，一次截图可能捕获过渡帧）
             has_add_button = False
+            hit_target = ""
+            popup_targets = ("添加到通讯录", "添加到", "通讯录",
+                             "发消息", "音视频通话", "朋友", "加到")
             if popup_rect:
-                try:
-                    img = _screenshot_region(*popup_rect)
-                    if img is not None:
-                        has_add_button = False
-                        hit_target = ""
-                        for target in ("添加到通讯录", "添加到", "通讯录"):
-                            if _ocr_contains_text(img, target, glog=self._emit_log):
-                                has_add_button = True
-                                hit_target = target
+                for ocr_attempt in range(2):
+                    if ocr_attempt > 0:
+                        self._sleep(1.5)
+                        self._emit_log(f"弹窗OCR第{ocr_attempt+1}次重试...")
+                    try:
+                        img = _screenshot_region(*popup_rect)
+                        if img is not None:
+                            for target in popup_targets:
+                                if _ocr_contains_text(img, target, glog=self._emit_log):
+                                    has_add_button = True
+                                    hit_target = target
+                                    break
+                            if has_add_button:
                                 break
-                        self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
-                                       f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'")
-                        # OCR 失败时保存诊断截图，方便跨轮对比排查
-                        if not has_add_button:
-                            try:
-                                import tempfile
-                                debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
-                                os.makedirs(debug_dir, exist_ok=True)
-                                filename = f"popup_fail_{int(time.time())}.png"
-                                img.save(os.path.join(debug_dir, filename))
-                                self._emit_log(f"诊断截图已保存: {debug_dir}\\{filename}")
-                            except Exception:
-                                pass
-                except Exception as e:
-                    self._emit_log(f"OCR弹窗检测异常: {e}")
+                            # 最终失败时保存诊断截图，方便跨轮对比排查
+                            if ocr_attempt == 1:
+                                try:
+                                    import tempfile
+                                    debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
+                                    os.makedirs(debug_dir, exist_ok=True)
+                                    ts = int(time.time())
+                                    safe_id = wechat_id.replace("/", "_").replace("\\", "_") if wechat_id else "unknown"
+                                    filename = f"popup_fail_{safe_id}_{ts}.png"
+                                    img.save(os.path.join(debug_dir, filename))
+                                    self._emit_log(f"诊断截图已保存: {debug_dir}\\{filename}")
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        self._emit_log(f"OCR弹窗检测异常(第{ocr_attempt+1}次): {e}")
+                self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
+                               f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'")
 
             # 判断逻辑
             if has_add_button:
@@ -950,14 +958,21 @@ class WeChatController:
             return ("not_found", "")
 
     def close_popup(self):
-        """关闭弹窗 - 找到弹窗 → 激活 → ESC → 验证关闭，最多重试3次"""
+        """关闭弹窗 - 两级搜索 → 激活 → ESC → 验证关闭，最多重试3次。
+
+        与 check_popup_status() 对齐：同时搜索独立窗口（WindowControl）和
+        主窗口内面板（PaneControl），解决 CEF 内部面板 ESC 关闭后仍被
+        UIA 找到导致下一号连锁失败的问题。
+        """
         if not UIA_AVAILABLE:
             return
         popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
 
         for attempt in range(3):
-            # 查找弹窗
+            # 两级搜索弹窗（与 check_popup_status 对齐）
             popup = None
+
+            # 第1级：独立窗口
             for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
@@ -967,9 +982,20 @@ class WeChatController:
                 except Exception:
                     continue
 
+            # 第2级：主窗口内面板（CEF 内部面板，之前漏掉的搜索）
+            if popup is None and self.wechat_window:
+                for title in popup_titles:
+                    try:
+                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
+                        if pane.Exists(maxSearchSeconds=0.5):
+                            popup = pane
+                            break
+                    except Exception:
+                        continue
+
             if popup is None:
-                logger.debug("弹窗已关闭(ESC)")
-                return  # 弹窗已关闭
+                logger.debug("弹窗已关闭")
+                return
 
             # 激活弹窗使其能接收 ESC 按键
             try:
@@ -984,7 +1010,44 @@ class WeChatController:
             _press_key(_VK["escape"])
             self._sleep(0.5)
 
-        logger.warning("弹窗关闭失败(3次重试后仍存在)")
+        # 3次 ESC 均失败，改用鼠标点击微信窗口左侧（聊天列表区域）关闭面板
+        self._emit_log("ESC关闭弹窗失败，尝试鼠标点击关闭...", "warn")
+        try:
+            if self.wechat_window:
+                hwnd = self.wechat_window.NativeWindowHandle
+                if hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.2)
+                    rect = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    # 点击窗口左侧 15% 位置（聊天列表区域），可关闭右侧面板
+                    click_x = rect.left + int((rect.right - rect.left) * 0.15)
+                    click_y = rect.top + int((rect.bottom - rect.top) * 0.5)
+                    _mouse_click(click_x, click_y)
+                    self._sleep(0.5)
+        except Exception as e:
+            logger.warning(f"鼠标点击关闭弹窗失败: {e}")
+
+        # 最终验证：弹窗是否真的关闭了（两级搜索确认）
+        self._sleep(0.3)
+        for title in popup_titles:
+            try:
+                w = auto.WindowControl(Name=title, searchDepth=3)
+                if w.Exists(maxSearchSeconds=0.3):
+                    self._emit_log(f"弹窗关闭失败(仍存在): {title}", "error")
+                    return
+            except Exception:
+                continue
+        if self.wechat_window:
+            for title in popup_titles:
+                try:
+                    pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
+                    if pane.Exists(maxSearchSeconds=0.3):
+                        self._emit_log(f"弹窗关闭失败(面板仍存在): {title}", "error")
+                        return
+                except Exception:
+                    continue
+        logger.debug("弹窗已关闭(鼠标点击)")
 
     def clear_search(self):
         """清空搜索框"""
@@ -1046,7 +1109,7 @@ class WeChatController:
             return ("error", "用户停止")
 
         # 5. 检测弹窗状态
-        status, detail = self.check_popup_status()
+        status, detail = self.check_popup_status(wechat_id)
 
         # OCR/UIA 搜索期间用户可能点了停止
         if self._stop_event and self._stop_event.is_set():
