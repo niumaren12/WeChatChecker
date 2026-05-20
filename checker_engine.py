@@ -381,68 +381,39 @@ class CheckerEngine:
                     total_checked += len(batch)
                     batch_counter += 1
 
-                    # 批次间等待（含IP切换）
+                    # 批次间等待（含IP切换）—— 仅非最后一批
                     if batch_idx < len(batches) - 1 and not self._stop_event.is_set():
-                        wait_min = random.uniform(bi_min, bi_max)
-                        wait_sec = wait_min * 60
-
-                        # 检查是否需要在此批次后切换IP
-                        need_ip_switch = (
-                            ip_switcher is not None
-                            and batch_counter % ip_switch_batch_count == 0
+                        self._batch_wait_with_ip_switch(
+                            batch_counter, ip_switcher, ip_switch_batch_count,
+                            ip_switch_advance, bi_min, bi_max, round_num
                         )
 
-                        if need_ip_switch:
-                            # ----- 三阶段：预等 → 测速切换 → 剩余等待 -----
-                            # 阶段1：先等大部分时间，预留 advance 秒用于测速+切换
-                            pre_wait = max(0, wait_sec - ip_switch_advance)
-                            if pre_wait > 0:
-                                self._emit_log(
-                                    f"本批完成，等待 {pre_wait/60:.1f} 分钟后开始测速切换IP..."
-                                )
-                                self._wait_with_stop(pre_wait, f"batch_r{round_num}")
-
-                            if self._stop_event.is_set():
-                                break
-
-                            # 阶段2：测速 + 切换IP（计时实际耗时）
-                            self._emit_log("开始实时测速所有节点...")
-                            self._emit_status("正在测速节点并切换IP...")
-                            t_start = time.time()
-                            ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
-                                self._stop_event
-                            )
-                            t_elapsed = time.time() - t_start
-
-                            if ok:
-                                self._emit_log(
-                                    f"IP切换成功: {old_ip} → {new_ip} "
-                                    f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
-                                )
-                                if self.on_ip_changed:
-                                    self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
-                            else:
-                                self._emit_log(f"IP切换失败: {msg}", "warn")
-                                if self.on_ip_changed:
-                                    self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
-
-                            # 阶段3：剩余等待（补齐到总间隔时间）
-                            remaining = max(0, wait_sec - pre_wait - t_elapsed)
-                            if remaining > 0:
-                                self._emit_log(
-                                    f"IP切换完成，再等 {remaining/60:.1f} 分钟后继续..."
-                                )
-                                self._wait_with_stop(remaining, f"ip_rest_r{round_num}")
-                        else:
-                            # 正常批次间等待（无IP切换）
+                # ========== 一轮所有批次完成 ==========
+                # 检查是否需要在此轮最后一批后切换IP（修复：最后一批之前被跳过）
+                if not self._stop_event.is_set() and round_num < max_rounds:
+                    need_ip_switch = (
+                        ip_switcher is not None
+                        and batch_counter % ip_switch_batch_count == 0
+                    )
+                    if need_ip_switch:
+                        self._emit_log("本批(本轮最后一批)完成后触发IP切换...")
+                        self._emit_status("正在测速节点并切换IP...")
+                        t_start = time.time()
+                        ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
+                            self._stop_event
+                        )
+                        t_elapsed = time.time() - t_start
+                        if ok:
                             self._emit_log(
-                                f"本批完成，等待 {wait_min:.1f} 分钟后检查下一批..."
+                                f"IP切换成功: {old_ip} → {new_ip} "
+                                f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
                             )
-                            self._emit_status(
-                                f"等待中 - 第{round_num}轮 下一批 "
-                                f"({wait_min:.0f}分钟后)"
-                            )
-                            self._wait_with_stop(wait_sec, f"batch_r{round_num}")
+                            if self.on_ip_changed:
+                                self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
+                        else:
+                            self._emit_log(f"IP切换失败: {msg}", "warn")
+                            if self.on_ip_changed:
+                                self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
 
                 # 一轮完成
                 if not self._stop_event.is_set():
@@ -481,6 +452,65 @@ class CheckerEngine:
             self._running = False
             self._emit_status("已停止" if self._stop_event.is_set() else "已完成")
             self._emit_log("检查已停止")
+
+    def _batch_wait_with_ip_switch(self, batch_counter, ip_switcher,
+                                     ip_switch_batch_count, ip_switch_advance,
+                                     bi_min, bi_max, round_num):
+        """批次间等待，如满足条件则触发IP切换（三阶段：预等→测速切换→剩余等待）"""
+        wait_min = random.uniform(bi_min, bi_max)
+        wait_sec = wait_min * 60
+
+        need_ip_switch = (
+            ip_switcher is not None
+            and batch_counter % ip_switch_batch_count == 0
+        )
+
+        if need_ip_switch:
+            pre_wait = max(0, wait_sec - ip_switch_advance)
+            if pre_wait > 0:
+                self._emit_log(
+                    f"本批完成，等待 {pre_wait/60:.1f} 分钟后开始测速切换IP..."
+                )
+                self._wait_with_stop(pre_wait, f"batch_r{round_num}")
+
+            if self._stop_event.is_set():
+                return
+
+            self._emit_log("开始实时测速所有节点...")
+            self._emit_status("正在测速节点并切换IP...")
+            t_start = time.time()
+            ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
+                self._stop_event
+            )
+            t_elapsed = time.time() - t_start
+
+            if ok:
+                self._emit_log(
+                    f"IP切换成功: {old_ip} → {new_ip} "
+                    f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
+                )
+                if self.on_ip_changed:
+                    self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
+            else:
+                self._emit_log(f"IP切换失败: {msg}", "warn")
+                if self.on_ip_changed:
+                    self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
+
+            remaining = max(0, wait_sec - pre_wait - t_elapsed)
+            if remaining > 0:
+                self._emit_log(
+                    f"IP切换完成，再等 {remaining/60:.1f} 分钟后继续..."
+                )
+                self._wait_with_stop(remaining, f"ip_rest_r{round_num}")
+        else:
+            self._emit_log(
+                f"本批完成，等待 {wait_min:.1f} 分钟后检查下一批..."
+            )
+            self._emit_status(
+                f"等待中 - 第{round_num}轮 下一批 "
+                f"({wait_min:.0f}分钟后)"
+            )
+            self._wait_with_stop(wait_sec, f"batch_r{round_num}")
 
     def _wait_with_stop(self, seconds, countdown_label=""):
         """等待指定秒数，可被停止/暂停打断。暂停时倒计时继续，归零后等待继续。"""
