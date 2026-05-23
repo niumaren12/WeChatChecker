@@ -69,7 +69,10 @@ class IPSwitcher:
         调用Clash API
         返回 (status_code, response_data_dict) 或 (0, error_msg)
         """
-        url = f"{self.clash_url}/{path.lstrip('/')}"
+        import urllib.parse
+        # URL编码路径中的中文等特殊字符
+        encoded_path = urllib.parse.quote(path, safe='/')
+        url = f"{self.clash_url}/{encoded_path.lstrip('/')}"
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
