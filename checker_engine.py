@@ -23,7 +23,7 @@ class CheckerEngine:
     def __init__(self, config_mgr: ConfigManager):
         self.config = config_mgr
         self.wechat = WeChatController(config_mgr.get("wechat_path", ""))
-        self.wechat._gui_log = self._emit_log      # 注入 GUI 日志回调
+        self.wechat._gui_log = self._forward_to_gui  # controller日志仅转发GUI，不重复写logger
         self._running = False
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()   # 暂停信号
@@ -60,13 +60,18 @@ class CheckerEngine:
         return self._running
 
     def _emit_log(self, msg, level="info"):
-        """向 GUI 发送日志"""
+        """引擎自身日志：同时写 logger 和 GUI"""
         if level == "info":
             logger.info(msg)
         elif level == "warn":
             logger.warning(msg)
         elif level == "error":
             logger.error(msg)
+        if self.on_log:
+            self.on_log(msg)
+
+    def _forward_to_gui(self, msg):
+        """仅转发到 GUI（供 WeChatController 回调，避免重复写 logger）"""
         if self.on_log:
             self.on_log(msg)
 
@@ -127,7 +132,7 @@ class CheckerEngine:
     def pause(self):
         """暂停检查（冻结倒计时）"""
         self._pause_event.set()
-        self._emit_log("检查已暂停")
+        self._emit_log(f"===== 用户暂停 at {time.strftime('%H:%M:%S')} =====")
         self._emit_status("已暂停")
 
     def resume(self, ids=None, cfg=None):
@@ -143,9 +148,9 @@ class CheckerEngine:
         self._pause_event.clear()
         if ids is not None:
             self.total_accounts = len(ids)
-            self._emit_log(f"继续检查，微信号列表已刷新（{len(ids)} 个）")
+            self._emit_log(f"继续检查 at {time.strftime('%H:%M:%S')}，微信号列表已刷新（{len(ids)} 个）")
         if cfg is not None:
-            self._emit_log("继续检查，配置已刷新")
+            self._emit_log(f"继续检查 at {time.strftime('%H:%M:%S')}，配置已刷新")
         self._emit_status("检查中...")
 
     def start(self, ids_file=None):
@@ -198,6 +203,14 @@ class CheckerEngine:
             return
 
         self._emit_log(f"检查启动，共 {len(ids)} 个微信号")
+        self._emit_log(
+            f"配置: 每批{cfg['batch_size']}个 | "
+            f"账号间隔{cfg['account_interval_min']}-{cfg['account_interval_max']}秒 | "
+            f"批次间隔{cfg['batch_interval_min']}-{cfg['batch_interval_max']}分 | "
+            f"最大{cfg['max_rounds']}轮 | "
+            f"IP切换:{'开' if cfg.get('ip_switch_enabled') else '关'} | "
+            f"Telegram:{'开' if self._telegram_notifier.enabled else '关'}"
+        )
 
     def start_with_ids(self, ids_list):
         """
@@ -241,6 +254,14 @@ class CheckerEngine:
             return
 
         self._emit_log(f"检查启动，共 {len(ids_list)} 个微信号")
+        self._emit_log(
+            f"配置: 每批{config_snapshot['batch_size']}个 | "
+            f"账号间隔{config_snapshot['account_interval_min']}-{config_snapshot['account_interval_max']}秒 | "
+            f"批次间隔{config_snapshot['batch_interval_min']}-{config_snapshot['batch_interval_max']}分 | "
+            f"最大{config_snapshot['max_rounds']}轮 | "
+            f"IP切换:{'开' if config_snapshot.get('ip_switch_enabled') else '关'} | "
+            f"Telegram:{'开' if self._telegram_notifier.enabled else '关'}"
+        )
 
     def _run_check_loop(self, all_ids, cfg, ip_switcher=None):
         """
@@ -343,18 +364,20 @@ class CheckerEngine:
                         # 检查单个微信号（COM 已在父线程初始化，直接用）
                         if self._stop_event.is_set():
                             break
+                        t_start = time.time()
                         status, detail = self.wechat.check_single_account(wechat_id)
+                        t_elapsed = time.time() - t_start
 
                         # 用户暂停：不记录结果，等待继续后重查当前号
                         if status == "paused":
-                            self._emit_log(f"已暂停，当前号 {wechat_id} 将重新检查")
+                            self._emit_log(f"===== 已暂停 at {time.strftime('%H:%M:%S')}，当前号 {wechat_id} 将重新检查 =====")
                             self._emit_status("已暂停")
                             # 等待继续或停止
                             while self._pause_event.is_set() and not self._stop_event.is_set():
                                 self._pause_event.wait(timeout=0.5)
                             if self._stop_event.is_set():
                                 break
-                            self._emit_log(f"继续检查，重查 {wechat_id}")
+                            self._emit_log(f"===== 继续检查 at {time.strftime('%H:%M:%S')}，重查 {wechat_id} =====")
                             self._emit_status("检查中...")
                             # 重查同一个号
                             status, detail = self.wechat.check_single_account(wechat_id)
@@ -371,7 +394,7 @@ class CheckerEngine:
 
                         if status == "abnormal":
                             self._emit_log(
-                                f"[异常] {wechat_id}: {detail}", "warn"
+                                f"[异常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "warn"
                             )
                             # 发送 Telegram 通知
                             telegram_sent = self._telegram_notifier.send_abnormal_notification(
@@ -382,11 +405,11 @@ class CheckerEngine:
                                 self.on_abnormal(wechat_id, detail, telegram_sent)
                         elif status == "success":
                             self._emit_log(
-                                f"[正常] {wechat_id}: {detail}", "info"
+                                f"[正常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "info"
                             )
                         else:
                             self._emit_log(
-                                f"[错误] {wechat_id}: {detail}", "error"
+                                f"[错误] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "error"
                             )
 
                         # 账号间等待（随机间隔）。操作出错时跳过，直接查下一个

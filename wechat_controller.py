@@ -507,6 +507,7 @@ class WeChatController:
         self._gui_log = None     # GUI 日志回调，由引擎注入
         self._stop_event = None  # 停止信号，由引擎注入
         self._pause_event = None # 暂停信号，由引擎注入
+        self._last_window_rect = None  # 上一次窗口位置尺寸，用于检测变化
 
     def set_stop_event(self, event):
         """注入停止信号，用于中断长时间等待"""
@@ -778,9 +779,23 @@ class WeChatController:
                     r = ctypes.wintypes.RECT()
                     ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
                     rect = (r.left, r.top, r.right, r.bottom)
+                    win_w = r.right - r.left
+                    win_h = r.bottom - r.top
                     self._emit_log(f"微信窗口位置: left={r.left} top={r.top} "
                                    f"right={r.right} bottom={r.bottom} "
-                                   f"({r.right-r.left}x{r.bottom-r.top})")
+                                   f"({win_w}x{win_h})")
+                    # 检测窗口尺寸明显变化（可能影响OCR）
+                    if self._last_window_rect:
+                        old_w = self._last_window_rect[2] - self._last_window_rect[0]
+                        old_h = self._last_window_rect[3] - self._last_window_rect[1]
+                        if old_w > 0 and old_h > 0:
+                            w_change = abs(win_w - old_w) / old_w
+                            h_change = abs(win_h - old_h) / old_h
+                            if w_change > 0.2 or h_change > 0.2:
+                                self._emit_log(
+                                    f"⚠ 窗口尺寸变化: {old_w}x{old_h} → {win_w}x{win_h} "
+                                    f"(宽{w_change:.0%} 高{h_change:.0%})，可能影响OCR", "warn")
+                    self._last_window_rect = rect
             except Exception as e:
                 self._emit_log(f"获取窗口位置异常: {e}", "error")
 
@@ -806,13 +821,15 @@ class WeChatController:
                 self._emit_log("截图下拉菜单失败", "error")
                 continue
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
+            t_ocr_start = time.time()
             try:
                 # 多级匹配：从最精确到最宽松
                 for target in ("网络查找", "QQ号", "络找", "查找", "络查"):
                     matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
                     if matches:
                         cx, cy, text = matches[0]
-                        self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy})")
+                        self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy}) "
+                                       f"(OCR耗时{time.time()-t_ocr_start:.1f}秒)")
                         if hwnd:
                             try:
                                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -865,12 +882,14 @@ class WeChatController:
 
             # 第1级：搜索较深层的独立窗口（searchDepth=3）
             popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
+            popup_level = None  # 记录找到弹窗的搜索级别
             for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
                     if w.Exists(maxSearchSeconds=0.8):
                         popup = w
-                        self._emit_log(f"找到弹窗(深层窗口): {title}")
+                        popup_level = "独立窗口(Level1)"
+                        self._emit_log(f"找到弹窗({popup_level}): {title}")
                         break
                 except Exception:
                     continue
@@ -882,7 +901,8 @@ class WeChatController:
                         pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
                         if pane.Exists(maxSearchSeconds=0.8):
                             popup = pane
-                            self._emit_log(f"找到弹窗(主窗口内面板): {title}")
+                            popup_level = "主窗口内面板(Level2)"
+                            self._emit_log(f"找到弹窗({popup_level}): {title}")
                             break
                     except Exception:
                         continue
@@ -922,6 +942,7 @@ class WeChatController:
             hit_target = ""
             popup_targets = ("添加到通讯录", "添加到", "通讯录", "讯录", "加到", "到通")
             if popup_rect:
+                t_popup_ocr_start = time.time()
                 for ocr_attempt in range(2):
                     if ocr_attempt > 0:
                         self._sleep(1.5)
@@ -955,7 +976,8 @@ class WeChatController:
                     except Exception as e:
                         self._emit_log(f"OCR弹窗检测异常(第{ocr_attempt+1}次): {e}")
                 self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
-                               f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'")
+                               f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'"
+                               f" (OCR耗时{time.time()-t_popup_ocr_start:.1f}秒)")
 
             # 判断逻辑
             if has_add_button:
