@@ -45,6 +45,7 @@ class CheckerEngine:
         self.on_status = None        # func(status_text)
         self.on_progress = None      # func(current, total, batch_info)
         self.on_abnormal = None      # func(wechat_id, reason, telegram_sent)
+        self.on_rate_limit = None    # func(wechat_id, reason, telegram_sent) — 频繁限制单独回调
         self.on_countdown = None     # func(remaining_seconds, label)
         self.on_ip_changed = None    # func(old_ip, new_ip, node_name, delay, success)
 
@@ -379,8 +380,10 @@ class CheckerEngine:
                                 break
                             self._emit_log(f"===== 继续检查 at {time.strftime('%H:%M:%S')}，重查 {wechat_id} =====")
                             self._emit_status("检查中...")
-                            # 重查同一个号
+                            # 重查同一个号，重新计时
+                            t_start = time.time()
                             status, detail = self.wechat.check_single_account(wechat_id)
+                            t_elapsed = time.time() - t_start
 
                         self.checked_accounts.append({
                             "id": wechat_id,
@@ -400,9 +403,9 @@ class CheckerEngine:
                             telegram_sent = self._telegram_notifier.send_rate_limit_notification(
                                 wechat_id, detail
                             )
-                            # 非阻塞通知 GUI
-                            if self.on_abnormal:
-                                self.on_abnormal(wechat_id, f"频繁限制: {detail}", telegram_sent)
+                            # 使用单独的 rate_limit 回调，避免混入异常面板
+                            if self.on_rate_limit:
+                                self.on_rate_limit(wechat_id, detail, telegram_sent)
                         elif status == "abnormal":
                             self._emit_log(
                                 f"[异常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "warn"

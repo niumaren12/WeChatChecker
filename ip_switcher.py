@@ -70,8 +70,10 @@ class IPSwitcher:
         返回 (status_code, response_data_dict) 或 (0, error_msg)
         """
         import urllib.parse
-        # URL编码路径中的中文等特殊字符
-        encoded_path = urllib.parse.quote(path, safe='/')
+        # URL编码每个 path segment（节点名可能包含 `/`，不能整体保留）
+        segments = path.split('/')
+        encoded_segments = [urllib.parse.quote(s, safe='') for s in segments]
+        encoded_path = '/'.join(encoded_segments)
         url = f"{self.clash_url}/{encoded_path.lstrip('/')}"
         data = None
         if body is not None:

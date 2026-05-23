@@ -41,12 +41,17 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.engine.on_status = self._on_engine_status
         self.engine.on_progress = self._on_engine_progress
         self.engine.on_abnormal = self._on_engine_abnormal
+        self.engine.on_rate_limit = self._on_engine_rate_limit  # 频繁限制单独回调
         self.engine.on_countdown = self._on_engine_countdown
         self.engine.on_ip_changed = self._on_ip_changed
 
         # 异常账号追踪（线程安全）
         self._abnormal_lock = threading.Lock()
         self._abnormal_dict: dict[str, AbnormalEntry] = {}
+
+        # 频繁限制追踪（与异常分开）
+        self._rate_limit_lock = threading.Lock()
+        self._rate_limit_dict: dict[str, AbnormalEntry] = {}
 
         # Mixin 初始化
         self._init_ip_panel_vars()
@@ -679,6 +684,28 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self._sound_muted = False  # 新异常出现，恢复声音警报
         self.root.after(0, self._refresh_abnormal_panel)
         self.root.after(0, self._ensure_beeping)
+
+    def _on_engine_rate_limit(self, wechat_id, reason, telegram_sent=None):
+        """
+        引擎频繁限制回调（在检查线程中被调用）
+        与异常分开：不触发声音警报，单独显示在频繁限制面板。
+        """
+        entry = AbnormalEntry(
+            wechat_id=wechat_id,
+            reason=reason,
+            timestamp=_time.time(),
+            telegram_sent=telegram_sent,
+        )
+        with self._rate_limit_lock:
+            self._rate_limit_dict[wechat_id] = entry
+
+        # 刷新面板显示频繁限制（使用相同的面板但标记类型）
+        self.root.after(0, self._refresh_rate_limit_panel)
+
+    def _refresh_rate_limit_panel(self):
+        """刷新频繁限制面板显示"""
+        # 简化处理：在异常面板的标题中区分显示
+        self._refresh_abnormal_panel()  # 暂时共用面板，后续可分离
 
     def _on_test_telegram(self):
         """发送 Telegram 测试消息，验证 Bot Token 和 Chat ID 配置。"""

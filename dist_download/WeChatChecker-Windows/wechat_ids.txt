@@ -1,0 +1,5 @@
+# 微信号列表（每行一个，# 开头的行为注释）
+# 请替换为你要检查的微信号
+wechat_example_1
+wechat_example_2
+wechat_example_3
