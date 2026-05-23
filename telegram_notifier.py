@@ -10,10 +10,6 @@ import threading
 import time as _time
 from logger_setup import logger
 
-# ==================== 配置常量（按需修改） ====================
-# Bot Token: 从 @BotFather 获取，格式 "123456:ABC-DEF1234ghikl"
-TELEGRAM_BOT_TOKEN = "8627831778:AAFZ04aMuyDCox3Npg4ZRpBRJBotqo6Vw48"
-
 # Telegram Bot API 端点
 _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
@@ -32,8 +28,9 @@ DEFAULT_TEMPLATE = (
 class TelegramNotifier:
     """Telegram Bot 通知发送器，线程安全"""
 
-    def __init__(self, enabled: bool = False, chat_id: str = "", proxy: str = ""):
+    def __init__(self, enabled: bool = False, bot_token: str = "", chat_id: str = "", proxy: str = ""):
         self._enabled = enabled
+        self._bot_token = bot_token
         self._chat_id = chat_id
         self._proxy = proxy.strip() if proxy else ""
         self._lock = threading.Lock()
@@ -49,6 +46,14 @@ class TelegramNotifier:
     @enabled.setter
     def enabled(self, value: bool):
         self._enabled = value
+
+    @property
+    def bot_token(self) -> str:
+        return self._bot_token
+
+    @bot_token.setter
+    def bot_token(self, value: str):
+        self._bot_token = value
 
     @property
     def chat_id(self) -> str:
@@ -80,14 +85,6 @@ class TelegramNotifier:
         if not self._enabled:
             return None
 
-        # 限流检查
-        with self._lock:
-            elapsed = _time.time() - self._last_send_time
-            wait = self._min_interval - elapsed if elapsed < self._min_interval else 0
-
-        if wait > 0:
-            _time.sleep(wait)
-
         timestamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
         message = DEFAULT_TEMPLATE.format(
             wechat_id=wechat_id,
@@ -95,9 +92,13 @@ class TelegramNotifier:
             timestamp=timestamp,
         )
 
-        ok, err = self._send_via_http(message)
-
+        # 单锁保护整个"限流检查→发送→更新时间戳"流程，防止竞态并发
         with self._lock:
+            elapsed = _time.time() - self._last_send_time
+            if elapsed < self._min_interval:
+                _time.sleep(self._min_interval - elapsed)
+
+            ok, err = self._send_via_http(message)
             self._last_send_time = _time.time()
 
         if ok:
@@ -128,13 +129,13 @@ class TelegramNotifier:
 
     def _send_via_http(self, message: str) -> tuple[bool, str]:
         """通过 urllib 发送 HTTP POST 到 Telegram Bot API"""
-        if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-            return False, "Bot Token 未配置（请修改 telegram_notifier.py 中的 TELEGRAM_BOT_TOKEN）"
+        if not self._bot_token:
+            return False, "Bot Token 未配置（请在 config.json 中设置 telegram_bot_token）"
 
         if not self._chat_id or not self._chat_id.strip():
             return False, "Chat ID 未配置（请在界面中填写群组/频道 ID）"
 
-        url = _API_URL.format(token=TELEGRAM_BOT_TOKEN)
+        url = _API_URL.format(token=self._bot_token)
 
         payload = json.dumps({
             "chat_id": self._chat_id.strip(),

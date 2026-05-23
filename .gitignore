@@ -9,6 +9,9 @@ build/
 # 日志
 logs/
 
+# 配置文件（含敏感信息，本地保留）
+config.json
+
 # 系统
 .DS_Store
 Thumbs.db

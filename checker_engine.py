@@ -34,6 +34,7 @@ class CheckerEngine:
         # Telegram 通知器
         self._telegram_notifier = TelegramNotifier(
             enabled=config_mgr.get("telegram_enabled", False),
+            bot_token=config_mgr.get("telegram_bot_token", ""),
             chat_id=config_mgr.get("telegram_chat_id", ""),
             proxy=config_mgr.get("telegram_proxy", ""),
         )
@@ -172,6 +173,7 @@ class CheckerEngine:
 
         config_snapshot = self._build_config_snapshot()
         self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
+        self._telegram_notifier.bot_token = self.config.get("telegram_bot_token", "")
         self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
         self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
@@ -215,6 +217,7 @@ class CheckerEngine:
 
         config_snapshot = self._build_config_snapshot()
         self._telegram_notifier.enabled = self.config.get("telegram_enabled", False)
+        self._telegram_notifier.bot_token = self.config.get("telegram_bot_token", "")
         self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
         self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
 
@@ -397,23 +400,7 @@ class CheckerEngine:
                     )
                     if need_ip_switch:
                         self._emit_log("本批(本轮最后一批)完成后触发IP切换...")
-                        self._emit_status("正在测速节点并切换IP...")
-                        t_start = time.time()
-                        ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
-                            self._stop_event
-                        )
-                        t_elapsed = time.time() - t_start
-                        if ok:
-                            self._emit_log(
-                                f"IP切换成功: {old_ip} → {new_ip} "
-                                f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
-                            )
-                            if self.on_ip_changed:
-                                self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
-                        else:
-                            self._emit_log(f"IP切换失败: {msg}", "warn")
-                            if self.on_ip_changed:
-                                self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
+                        self._do_ip_switch(ip_switcher)
 
                 # 一轮完成
                 if not self._stop_event.is_set():
@@ -453,6 +440,30 @@ class CheckerEngine:
             self._emit_status("已停止" if self._stop_event.is_set() else "已完成")
             self._emit_log("检查已停止")
 
+    def _do_ip_switch(self, ip_switcher):
+        """执行一次IP切换，记录日志并回调GUI。返回切换耗时(秒)"""
+        self._emit_log("开始实时测速所有节点...")
+        self._emit_status("正在测速节点并切换IP...")
+        t_start = time.time()
+        ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
+            self._stop_event
+        )
+        t_elapsed = time.time() - t_start
+
+        if ok:
+            self._emit_log(
+                f"IP切换成功: {old_ip} → {new_ip} "
+                f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
+            )
+            if self.on_ip_changed:
+                self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
+        else:
+            self._emit_log(f"IP切换失败: {msg}", "warn")
+            if self.on_ip_changed:
+                self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
+
+        return t_elapsed
+
     def _batch_wait_with_ip_switch(self, batch_counter, ip_switcher,
                                      ip_switch_batch_count, ip_switch_advance,
                                      bi_min, bi_max, round_num):
@@ -476,25 +487,7 @@ class CheckerEngine:
             if self._stop_event.is_set():
                 return
 
-            self._emit_log("开始实时测速所有节点...")
-            self._emit_status("正在测速节点并切换IP...")
-            t_start = time.time()
-            ok, msg, old_ip, new_ip, node_name, delay = ip_switcher.switch_ip(
-                self._stop_event
-            )
-            t_elapsed = time.time() - t_start
-
-            if ok:
-                self._emit_log(
-                    f"IP切换成功: {old_ip} → {new_ip} "
-                    f"(节点: {node_name}, {delay}ms, 耗时{t_elapsed:.0f}秒)"
-                )
-                if self.on_ip_changed:
-                    self.on_ip_changed(old_ip, new_ip, node_name, delay, True)
-            else:
-                self._emit_log(f"IP切换失败: {msg}", "warn")
-                if self.on_ip_changed:
-                    self.on_ip_changed(old_ip if old_ip else "", None, None, 0, False)
+            t_elapsed = self._do_ip_switch(ip_switcher)
 
             remaining = max(0, wait_sec - pre_wait - t_elapsed)
             if remaining > 0:

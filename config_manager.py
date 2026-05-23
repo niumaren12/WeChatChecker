@@ -32,7 +32,8 @@ DEFAULT_CONFIG = {
 
     # Telegram 通知配置
     "telegram_enabled": True,
-    "telegram_chat_id": "-5089015384",
+    "telegram_bot_token": "",                 # Bot Token，从 @BotFather 获取
+    "telegram_chat_id": "",
     "telegram_proxy": "",
     "telegram_message_template": (
         "🚨 异常账号告警\n"

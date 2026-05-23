@@ -329,6 +329,8 @@ def _ocr_get_text_entries(image):
             except Exception as e:
                 logger.warning(f"Tesseract OCR 失败({pipe_name}): {e}")
                 continue
+            finally:
+                processed.close()
 
         entries = _parse_ocr_data(data)
         if entries:
@@ -799,31 +801,36 @@ class WeChatController:
                 self._emit_log("截图下拉菜单失败", "error")
                 continue
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
-
-            # 多级匹配：从最精确到最宽松
-            for target in ("网络查找", "QQ号", "络找", "查找", "络查"):
-                matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
-                if matches:
-                    cx, cy, text = matches[0]
-                    self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy})")
-                    if hwnd:
-                        try:
-                            ctypes.windll.user32.SetForegroundWindow(hwnd)
-                            time.sleep(0.15)
-                        except Exception:
-                            pass
-                    _mouse_click(cx, cy)
-                    self._sleep(2.0)
-                    return True
+            try:
+                # 多级匹配：从最精确到最宽松
+                for target in ("网络查找", "QQ号", "络找", "查找", "络查"):
+                    matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
+                    if matches:
+                        cx, cy, text = matches[0]
+                        self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy})")
+                        if hwnd:
+                            try:
+                                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                                time.sleep(0.15)
+                            except Exception:
+                                pass
+                        _mouse_click(cx, cy)
+                        self._sleep(2.0)
+                        return True
+            finally:
+                img.close()
 
         # 两次均失败：诊断输出
         try:
             diag_img = _screenshot_region(*region)
             if diag_img is not None:
-                entries, rows, full_text = _ocr_get_text_entries(diag_img)
-                if entries:
-                    all_text = " | ".join(e["text"] for e in entries[:15])
-                    self._emit_log(f"OCR识别到的全部文字({len(entries)}条): {all_text}", "warn")
+                try:
+                    entries, rows, full_text = _ocr_get_text_entries(diag_img)
+                    if entries:
+                        all_text = " | ".join(e["text"] for e in entries[:15])
+                        self._emit_log(f"OCR识别到的全部文字({len(entries)}条): {all_text}", "warn")
+                finally:
+                    diag_img.close()
         except Exception as e2:
             self._emit_log(f"OCR调试输出异常: {e2}", "error")
 
@@ -918,26 +925,29 @@ class WeChatController:
                     try:
                         img = _screenshot_region(*popup_rect)
                         if img is not None:
-                            for target in popup_targets:
-                                if _ocr_contains_text(img, target, glog=self._emit_log):
-                                    has_add_button = True
-                                    hit_target = target
+                            try:
+                                for target in popup_targets:
+                                    if _ocr_contains_text(img, target, glog=self._emit_log):
+                                        has_add_button = True
+                                        hit_target = target
+                                        break
+                                if has_add_button:
                                     break
-                            if has_add_button:
-                                break
-                            # 最终失败时保存诊断截图，方便跨轮对比排查
-                            if ocr_attempt == 1:
-                                try:
-                                    import tempfile
-                                    debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
-                                    os.makedirs(debug_dir, exist_ok=True)
-                                    ts = int(time.time())
-                                    safe_id = wechat_id.replace("/", "_").replace("\\", "_") if wechat_id else "unknown"
-                                    filename = f"popup_fail_{safe_id}_{ts}.png"
-                                    img.save(os.path.join(debug_dir, filename))
-                                    self._emit_log(f"诊断截图已保存: {debug_dir}\\{filename}")
-                                except Exception:
-                                    pass
+                                # 最终失败时保存诊断截图，方便跨轮对比排查
+                                if ocr_attempt == 1:
+                                    try:
+                                        import tempfile
+                                        debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
+                                        os.makedirs(debug_dir, exist_ok=True)
+                                        ts = int(time.time())
+                                        safe_id = wechat_id.replace("/", "_").replace("\\", "_") if wechat_id else "unknown"
+                                        filename = f"popup_fail_{safe_id}_{ts}.png"
+                                        img.save(os.path.join(debug_dir, filename))
+                                        self._emit_log(f"诊断截图已保存: {debug_dir}\\{filename}")
+                                    except Exception:
+                                        pass
+                            finally:
+                                img.close()
                     except Exception as e:
                         self._emit_log(f"OCR弹窗检测异常(第{ocr_attempt+1}次): {e}")
                 self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
@@ -1080,56 +1090,60 @@ class WeChatController:
         """
         logger.info(f"开始检查: {wechat_id}")
 
-        # 1. 激活窗口
-        if not self.activate_window():
-            return ("error", "无法激活微信窗口")
+        try:
+            # 1. 激活窗口
+            if not self.activate_window():
+                return ("error", "无法激活微信窗口")
 
-        self._sleep(0.3)
+            self._sleep(0.3)
 
-        # 2. 聚焦搜索框
-        if not self.focus_search_box():
-            return ("error", "无法聚焦搜索框")
+            # 2. 聚焦搜索框
+            if not self.focus_search_box():
+                return ("error", "无法聚焦搜索框")
 
-        self._sleep(0.5)
+            self._sleep(0.5)
 
-        # 3. 输入微信号
-        if not self.input_wechat_id(wechat_id):
-            return ("error", "无法输入微信号")
+            # 3. 输入微信号
+            if not self.input_wechat_id(wechat_id):
+                return ("error", "无法输入微信号")
 
-        self._sleep(0.5)
+            self._sleep(0.5)
 
-        # 4. 点击下拉项
-        if not self.click_dropdown_item():
-            self.close_popup()
-            self.clear_search()
-            return ("abnormal", "搜索无结果或无法点开详情")
+            # 4. 点击下拉项
+            if not self.click_dropdown_item():
+                return ("abnormal", "搜索无结果或无法点开详情")
 
-        # OCR/点击期间用户可能点了停止，立即退出
-        if self._stop_event and self._stop_event.is_set():
-            return ("error", "用户停止")
+            # OCR/点击期间用户可能点了停止，立即退出
+            if self._stop_event and self._stop_event.is_set():
+                return ("error", "用户停止")
 
-        # 5. 检测弹窗状态
-        status, detail = self.check_popup_status(wechat_id)
+            # 5. 检测弹窗状态
+            status, detail = self.check_popup_status(wechat_id)
 
-        # OCR/UIA 搜索期间用户可能点了停止
-        if self._stop_event and self._stop_event.is_set():
-            self.close_popup()
-            self.clear_search()
-            return ("error", "用户停止")
+            # OCR/UIA 搜索期间用户可能点了停止
+            if self._stop_event and self._stop_event.is_set():
+                return ("error", "用户停止")
 
-        # 6. 关闭弹窗并清空搜索框
-        self.close_popup()
-        self.clear_search()
+            if status == "normal":
+                logger.info(f"[正常] {wechat_id} -> 昵称: {detail}")
+                return ("success", detail)
+            elif status == "abnormal":
+                logger.warning(f"[异常] {wechat_id} -> {detail}")
+                return ("abnormal", detail)
+            else:
+                logger.warning(f"[未知] {wechat_id} -> 未检测到弹窗")
+                return ("abnormal", "未检测到弹窗")
 
-        if status == "normal":
-            logger.info(f"[正常] {wechat_id} -> 昵称: {detail}")
-            return ("success", detail)
-        elif status == "abnormal":
-            logger.warning(f"[异常] {wechat_id} -> {detail}")
-            return ("abnormal", detail)
-        else:
-            logger.warning(f"[未知] {wechat_id} -> 未检测到弹窗")
-            return ("abnormal", "未检测到弹窗")
+        finally:
+            # 无论成功/失败/异常，确保清理弹窗和搜索框，避免影响下一个号
+            try:
+                self.close_popup()
+            except Exception:
+                pass
+            try:
+                self.clear_search()
+            except Exception:
+                pass
 
 
 # ==================== 测试入口 ====================

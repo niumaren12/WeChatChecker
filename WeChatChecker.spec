@@ -14,6 +14,8 @@ a = Analysis(
         'checker_engine',
         'config_manager',
         'logger_setup',
+        'ip_panel',
+        'abnormal_panel',
         'PIL',
         'PIL.Image',
         'PIL.ImageOps',
