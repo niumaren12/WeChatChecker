@@ -6,7 +6,6 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('config.json', '.'),
         ('wechat_ids.txt', '.'),
     ],
     hiddenimports=[
