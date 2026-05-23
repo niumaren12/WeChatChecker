@@ -4,9 +4,16 @@
 """
 import json
 import os
+import sys
 from logger_setup import logger
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# 兼容 PyInstaller 打包：exe 运行时用 exe 所在目录，源码运行时用脚本目录
+if getattr(sys, 'frozen', False):
+    _APP_DIR = os.path.dirname(sys.executable)
+else:
+    _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(_APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "wechat_path": r"C:\Program Files\Tencent\Weixin\Weixin.exe",

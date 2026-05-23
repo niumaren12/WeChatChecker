@@ -3,10 +3,17 @@
 自动滚动保留 7 天的日志文件
 """
 import os
+import sys
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+# 兼容 PyInstaller 打包
+if getattr(sys, 'frozen', False):
+    _APP_DIR = os.path.dirname(sys.executable)
+else:
+    _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+LOG_DIR = os.path.join(_APP_DIR, "logs")
 
 
 def setup_logger(name="WeChatChecker"):
