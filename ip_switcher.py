@@ -20,13 +20,14 @@ from logger_setup import logger
 class IPSwitcher:
     """IP切换器，支持Clash API和自定义命令两种方式"""
 
-    def __init__(self, method="clash", clash_url="http://127.0.0.1:9090",
-                 proxy_group="Proxy", command="",
+    def __init__(self, method="clash", clash_url="http://127.0.0.1:9097",
+                 proxy_group="Proxy", command="", secret="",
                  verify_url="https://api.ipify.org", timeout=30):
         self.method = method          # "clash" 或 "command"
         self.clash_url = clash_url.rstrip('/')
         self.proxy_group = proxy_group
         self.command = command
+        self.secret = secret          # Clash API 密钥（Bearer token）
         self.verify_url = verify_url
         self.timeout = timeout
         self._lock = threading.Lock()  # 防止并发切换
@@ -75,6 +76,8 @@ class IPSwitcher:
         try:
             req = urllib.request.Request(url, data=data, method=method)
             req.add_header("Content-Type", "application/json")
+            if self.secret:
+                req.add_header("Authorization", f"Bearer {self.secret}")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 raw = resp.read().decode("utf-8")
                 return (resp.status, json.loads(raw) if raw else {})
@@ -114,6 +117,8 @@ class IPSwitcher:
 
         try:
             req = urllib.request.Request(url)
+            if self.secret:
+                req.add_header("Authorization", f"Bearer {self.secret}")
             with urllib.request.urlopen(req, timeout=timeout / 1000 + 5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 delay = data.get("delay", -1)

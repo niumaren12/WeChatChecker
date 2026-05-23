@@ -22,8 +22,9 @@ DEFAULT_CONFIG = {
     # IP 自动切换配置
     "ip_switch_enabled": False,
     "ip_switch_method": "clash",              # "clash" 或 "command"
-    "ip_switch_clash_url": "http://127.0.0.1:9090",
+    "ip_switch_clash_url": "http://127.0.0.1:9097",
     "ip_switch_clash_group": "Proxy",         # Clash 代理组名
+    "ip_switch_clash_secret": "",             # Clash API 密钥（Clash Verge 设置中可查看，默认空=不认证）
     "ip_switch_command": "",                  # 自定义命令（method=command时使用）
     "ip_switch_batch_count": 3,               # 每N批后切换
     "ip_switch_timeout": 30,                  # 切换超时(秒)

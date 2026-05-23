@@ -83,7 +83,7 @@ class IPPanelMixin:
         self.ip_clash_row.pack(fill=tk.X, pady=(0, 3))
 
         ttk.Label(self.ip_clash_row, text="Clash地址:").pack(side=tk.LEFT)
-        self.ip_clash_url_var = tk.StringVar(value="http://127.0.0.1:9090")
+        self.ip_clash_url_var = tk.StringVar(value="http://127.0.0.1:9097")
         ttk.Entry(
             self.ip_clash_row, textvariable=self.ip_clash_url_var, width=18
         ).pack(side=tk.LEFT, padx=(4, 10))
@@ -93,6 +93,20 @@ class IPPanelMixin:
         ttk.Entry(
             self.ip_clash_row, textvariable=self.ip_clash_group_var, width=10
         ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # API 密钥行（Clash Verge 需要）
+        ip_secret_row = ttk.Frame(ip_config)
+        ip_secret_row.pack(fill=tk.X, pady=(2, 0))
+
+        ttk.Label(ip_secret_row, text="API密钥:", font=("微软雅黑", 8)).pack(side=tk.LEFT)
+        self.ip_clash_secret_var = tk.StringVar()
+        ttk.Entry(
+            ip_secret_row, textvariable=self.ip_clash_secret_var, width=22
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(
+            ip_secret_row, text="(选填，Clash Verge设置→外部控制中查看)",
+            font=("微软雅黑", 7), foreground="#999999"
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # 命令配置行
         self.ip_cmd_row = ttk.Frame(ip_config)
@@ -206,6 +220,7 @@ class IPPanelMixin:
         self.ip_switch_method_var.set(self.config.get("ip_switch_method", "clash"))
         self.ip_clash_url_var.set(self.config.get("ip_switch_clash_url", "http://127.0.0.1:9090"))
         self.ip_clash_group_var.set(self.config.get("ip_switch_clash_group", "Proxy"))
+        self.ip_clash_secret_var.set(self.config.get("ip_switch_clash_secret", ""))
         self.ip_command_var.set(self.config.get("ip_switch_command", ""))
         self.ip_batch_count_var.set(str(self.config.get("ip_switch_batch_count", 3)))
         self.ip_timeout_var.set(str(self.config.get("ip_switch_timeout", 30)))
@@ -219,6 +234,7 @@ class IPPanelMixin:
         self.config.set("ip_switch_method", self.ip_switch_method_var.get())
         self.config.set("ip_switch_clash_url", self.ip_clash_url_var.get().strip())
         self.config.set("ip_switch_clash_group", self.ip_clash_group_var.get().strip())
+        self.config.set("ip_switch_clash_secret", self.ip_clash_secret_var.get().strip())
         self.config.set("ip_switch_command", self.ip_command_var.get().strip())
         try:
             self.config.set("ip_switch_batch_count", int(self.ip_batch_count_var.get()))
@@ -295,6 +311,7 @@ class IPPanelMixin:
                     method="clash",
                     clash_url=self.ip_clash_url_var.get().strip(),
                     proxy_group=self.ip_clash_group_var.get().strip(),
+                    secret=self.ip_clash_secret_var.get().strip(),
                     verify_url=self.ip_verify_url_var.get().strip(),
                 )
             else:
@@ -378,6 +395,7 @@ class IPPanelMixin:
                     method="clash",
                     clash_url=self.ip_clash_url_var.get().strip(),
                     proxy_group=self.ip_clash_group_var.get().strip(),
+                    secret=self.ip_clash_secret_var.get().strip(),
                     verify_url=self.ip_verify_url_var.get().strip(),
                     timeout=int(self.ip_timeout_var.get() or 30),
                 )

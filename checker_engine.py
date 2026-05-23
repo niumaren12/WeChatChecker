@@ -89,8 +89,9 @@ class CheckerEngine:
             # IP 切换配置
             "ip_switch_enabled": self.config.get("ip_switch_enabled", False),
             "ip_switch_method": self.config.get("ip_switch_method", "clash"),
-            "ip_switch_clash_url": self.config.get("ip_switch_clash_url", "http://127.0.0.1:9090"),
+            "ip_switch_clash_url": self.config.get("ip_switch_clash_url", "http://127.0.0.1:9097"),
             "ip_switch_clash_group": self.config.get("ip_switch_clash_group", "Proxy"),
+            "ip_switch_clash_secret": self.config.get("ip_switch_clash_secret", ""),
             "ip_switch_command": self.config.get("ip_switch_command", ""),
             "ip_switch_batch_count": self.config.get("ip_switch_batch_count", 3),
             "ip_switch_timeout": self.config.get("ip_switch_timeout", 30),
@@ -106,8 +107,9 @@ class CheckerEngine:
             from ip_switcher import IPSwitcher
             return IPSwitcher(
                 method=cfg.get("ip_switch_method", "clash"),
-                clash_url=cfg.get("ip_switch_clash_url", "http://127.0.0.1:9090"),
+                clash_url=cfg.get("ip_switch_clash_url", "http://127.0.0.1:9097"),
                 proxy_group=cfg.get("ip_switch_clash_group", "Proxy"),
+                secret=cfg.get("ip_switch_clash_secret", ""),
                 command=cfg.get("ip_switch_command", ""),
                 verify_url=cfg.get("ip_switch_verify_url", "https://api.ipify.org"),
                 timeout=cfg.get("ip_switch_timeout", 30),
