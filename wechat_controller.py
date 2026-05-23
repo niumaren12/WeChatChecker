@@ -920,8 +920,7 @@ class WeChatController:
             # 多关键词回退 + 2次重试（弹窗可能有滑入动画，一次截图可能捕获过渡帧）
             has_add_button = False
             hit_target = ""
-            popup_targets = ("添加到通讯录", "添加到", "通讯录",
-                             "发消息", "音视频通话", "朋友", "加到")
+            popup_targets = ("添加到通讯录", "添加到", "通讯录", "讯录", "加到", "到通")
             if popup_rect:
                 for ocr_attempt in range(2):
                     if ocr_attempt > 0:
