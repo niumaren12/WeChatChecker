@@ -30,6 +30,7 @@ class CheckerEngine:
         self._new_ids = None    # 恢复时的微信号列表（None=不更新）
         self._new_cfg = None    # 恢复时的配置快照（None=不更新）
         self.wechat.set_stop_event(self._stop_event)  # 注入停止信号
+        self.wechat.set_pause_event(self._pause_event) # 注入暂停信号
 
         # Telegram 通知器
         self._telegram_notifier = TelegramNotifier(
@@ -344,6 +345,20 @@ class CheckerEngine:
                             break
                         status, detail = self.wechat.check_single_account(wechat_id)
 
+                        # 用户暂停：不记录结果，等待继续后重查当前号
+                        if status == "paused":
+                            self._emit_log(f"已暂停，当前号 {wechat_id} 将重新检查")
+                            self._emit_status("已暂停")
+                            # 等待继续或停止
+                            while self._pause_event.is_set() and not self._stop_event.is_set():
+                                self._pause_event.wait(timeout=0.5)
+                            if self._stop_event.is_set():
+                                break
+                            self._emit_log(f"继续检查，重查 {wechat_id}")
+                            self._emit_status("检查中...")
+                            # 重查同一个号
+                            status, detail = self.wechat.check_single_account(wechat_id)
+
                         self.checked_accounts.append({
                             "id": wechat_id,
                             "status": status,
@@ -508,25 +523,21 @@ class CheckerEngine:
             self._wait_with_stop(wait_sec, f"batch_r{round_num}")
 
     def _wait_with_stop(self, seconds, countdown_label=""):
-        """等待指定秒数，可被停止/暂停打断。暂停时倒计时继续，归零后等待继续。"""
+        """等待指定秒数，可被停止/暂停打断。暂停时倒计时冻结，继续后从断点恢复。"""
         interval = 0.5
-        start = time.monotonic()
+        elapsed = 0.0
         last_reported = -1
-        while True:
-            real_elapsed = time.monotonic() - start
-            if real_elapsed >= seconds or self._stop_event.is_set():
-                break
-            time.sleep(min(interval, seconds - real_elapsed))
-            # sleep 后重新计算实际经过时间
-            real_elapsed = time.monotonic() - start
-            remaining = max(0, seconds - real_elapsed)
+        while elapsed < seconds and not self._stop_event.is_set():
+            # 暂停中：冻结倒计时
             if self._pause_event.is_set():
+                remaining = max(0, seconds - elapsed)
                 self._emit_status(f"已暂停（剩余 {int(remaining)}秒）")
+                self._pause_event.wait(timeout=1.0)
+                continue
+
+            time.sleep(interval)
+            elapsed += interval
+            remaining = max(0, seconds - elapsed)
             if self.on_countdown and countdown_label and int(remaining) != last_reported:
                 self.on_countdown(remaining, countdown_label)
                 last_reported = int(remaining)
-
-        # 倒计时结束，暂停中则等待继续
-        while self._pause_event.is_set() and not self._stop_event.is_set():
-            self._emit_status("等待继续...")
-            self._pause_event.wait(timeout=1.0)

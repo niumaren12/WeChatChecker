@@ -506,10 +506,15 @@ class WeChatController:
         self.main_control = None
         self._gui_log = None     # GUI 日志回调，由引擎注入
         self._stop_event = None  # 停止信号，由引擎注入
+        self._pause_event = None # 暂停信号，由引擎注入
 
     def set_stop_event(self, event):
         """注入停止信号，用于中断长时间等待"""
         self._stop_event = event
+
+    def set_pause_event(self, event):
+        """注入暂停信号，用于立即暂停当前检查"""
+        self._pause_event = event
 
     def _sleep(self, seconds):
         """可中断的等待：检查停止信号，被停止时提前返回"""
@@ -1113,16 +1118,20 @@ class WeChatController:
             if not self.click_dropdown_item():
                 return ("abnormal", "搜索无结果或无法点开详情")
 
-            # OCR/点击期间用户可能点了停止，立即退出
+            # OCR/点击期间用户可能点了停止或暂停，立即退出
             if self._stop_event and self._stop_event.is_set():
                 return ("error", "用户停止")
+            if self._pause_event and self._pause_event.is_set():
+                return ("paused", "")
 
             # 5. 检测弹窗状态
             status, detail = self.check_popup_status(wechat_id)
 
-            # OCR/UIA 搜索期间用户可能点了停止
+            # OCR/UIA 搜索期间用户可能点了停止或暂停
             if self._stop_event and self._stop_event.is_set():
                 return ("error", "用户停止")
+            if self._pause_event and self._pause_event.is_set():
+                return ("paused", "")
 
             if status == "normal":
                 logger.info(f"[正常] {wechat_id} -> 昵称: {detail}")
