@@ -339,12 +339,19 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
             control_frame, variable=self.progress_var,
-            maximum=100, length=300
+            maximum=100, length=200
         )
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 8))
+        self.progress_bar.pack(side=tk.LEFT, padx=(12, 4))
 
-        self.progress_label = ttk.Label(control_frame, text="", width=16)
-        self.progress_label.pack(side=tk.LEFT)
+        self.progress_label = ttk.Label(control_frame, text="", width=8)
+        self.progress_label.pack(side=tk.LEFT, padx=(0, 8))
+
+        # 倒计时标签（独立显示，醒目）
+        self.countdown_label = ttk.Label(
+            control_frame, text="", font=("微软雅黑", 11, "bold"),
+            foreground="#E67E22", width=12
+        )
+        self.countdown_label.pack(side=tk.LEFT, padx=(0, 8))
 
         # 状态标签（最右）
         self.status_label = ttk.Label(
@@ -607,6 +614,9 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         # 引擎完成/停止时重置按钮
         if text in ("已完成", "已停止"):
             self.root.after(0, self._on_engine_finished)
+        # 非等待状态时清空倒计时
+        if "检查中" in text or text in ("已完成", "已停止", "正在测速节点并切换IP..."):
+            self.root.after(0, lambda: self.countdown_label.config(text=""))
 
     def _on_engine_finished(self):
         """引擎完成/停止后的按钮重置"""
@@ -615,9 +625,10 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.stop_btn.config(state=tk.DISABLED)
         self._paused = False
         self.ip_test_btn.config(state=tk.NORMAL)  # 恢复手动测试按钮
+        self.countdown_label.config(text="")  # 清空倒计时
 
     def _on_engine_countdown(self, remaining, label):
-        """引擎倒计时回调（在子线程中调用）"""
+        """引擎倒计时回调（在子线程中调用）— 更新独立倒计时标签"""
         if remaining < 60:
             time_str = f"{int(remaining)}秒"
         else:
@@ -625,18 +636,20 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
             s = int(remaining % 60)
             time_str = f"{m}分{s:02d}秒"
 
+        # 根据等待类型显示不同前缀
         if label == "account":
-            text = f"等待中 - {time_str}后检查下一个"
+            prefix = "下一号"
         elif label.startswith("batch_r"):
-            r = label.split("_r")[1]
-            text = f"等待中 - 第{r}轮 下一批 ({time_str}后)"
+            prefix = "下一批"
         elif label.startswith("round_r"):
-            r = label.split("_r")[1]
-            text = f"等待中 - 下一轮 ({time_str}后)"
+            prefix = "下一轮"
+        elif label.startswith("ip_rest"):
+            prefix = "IP切换后"
         else:
-            text = f"等待中 - {time_str}后"
+            prefix = "等待"
 
-        self.root.after(0, self._update_status, text)
+        # 更新独立倒计时标签
+        self.root.after(0, lambda: self.countdown_label.config(text=f"⏱ {prefix}: {time_str}"))
 
     def _on_engine_progress(self, current, total, batch_info):
         """引擎进度回调"""
@@ -816,6 +829,7 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
             self._paused = False
             self.pause_btn.config(text="⏸ 暂停")
             self._update_status("检查中...")
+            self.countdown_label.config(text="")  # 清空倒计时
         else:
             # 暂停
             self.engine.pause()
