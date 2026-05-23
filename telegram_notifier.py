@@ -24,6 +24,18 @@ DEFAULT_TEMPLATE = (
     "来自: 微信账号检查工具"
 )
 
+# 频繁限制消息模板
+RATE_LIMIT_TEMPLATE = (
+    "⚠️ 搜索频繁限制\n"
+    "\n"
+    "微信号: {wechat_id}\n"
+    "限制提示: {reason}\n"
+    "检查时间: {timestamp}\n"
+    "\n"
+    "建议: 暂停检查或切换 IP\n"
+    "来自: 微信账号检查工具"
+)
+
 
 class TelegramNotifier:
     """Telegram Bot 通知发送器，线程安全"""
@@ -105,6 +117,41 @@ class TelegramNotifier:
             logger.info(f"Telegram 通知已发送: {wechat_id}")
         else:
             logger.error(f"Telegram 通知发送失败 ({wechat_id}): {err}")
+
+        return ok
+
+    def send_rate_limit_notification(self, wechat_id: str, reason: str) -> bool | None:
+        """
+        发送频繁限制通知。线程安全，可在检查子线程中调用。
+
+        Returns:
+            True  发送成功
+            False 发送失败
+            None  Telegram 功能未启用
+        """
+        if not self._enabled:
+            return None
+
+        timestamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
+        message = RATE_LIMIT_TEMPLATE.format(
+            wechat_id=wechat_id,
+            reason=reason,
+            timestamp=timestamp,
+        )
+
+        # 单锁保护整个"限流检查→发送→更新时间戳"流程，防止竞态并发
+        with self._lock:
+            elapsed = _time.time() - self._last_send_time
+            if elapsed < self._min_interval:
+                _time.sleep(self._min_interval - elapsed)
+
+            ok, err = self._send_via_http(message)
+            self._last_send_time = _time.time()
+
+        if ok:
+            logger.info(f"Telegram 频繁限制通知已发送: {wechat_id}")
+        else:
+            logger.error(f"Telegram 频繁限制通知发送失败 ({wechat_id}): {err}")
 
         return ok
 

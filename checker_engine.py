@@ -392,7 +392,18 @@ class CheckerEngine:
                         if self._stop_event.is_set():
                             break
 
-                        if status == "abnormal":
+                        if status == "rate_limit":
+                            self._emit_log(
+                                f"[频繁] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒) — 搜索被限制，建议暂停或换IP", "warn"
+                            )
+                            # 发送 Telegram 通知（频繁限制）
+                            telegram_sent = self._telegram_notifier.send_rate_limit_notification(
+                                wechat_id, detail
+                            )
+                            # 非阻塞通知 GUI
+                            if self.on_abnormal:
+                                self.on_abnormal(wechat_id, f"频繁限制: {detail}", telegram_sent)
+                        elif status == "abnormal":
                             self._emit_log(
                                 f"[异常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "warn"
                             )

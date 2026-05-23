@@ -936,11 +936,18 @@ class WeChatController:
                 except Exception as e:
                     self._emit_log(f"无法获取弹窗位置: {e}")
 
-            # OCR 识别弹窗区域，检查是否包含正常号特征文字
+            # OCR 识别弹窗区域，检查状态特征文字
+            # 两类关键字：正常账号特征 + 搜索限制提示
             # 多关键词回退 + 2次重试（弹窗可能有滑入动画，一次截图可能捕获过渡帧）
             has_add_button = False
+            has_rate_limit = False
             hit_target = ""
             popup_targets = ("添加到通讯录", "添加到", "通讯录", "讯录", "加到", "到通")
+            # 频繁限制关键字：完整短语优先，截断片段兜底（移除高风险的"稍后"单字）
+            rate_limit_targets = (
+                "操作频繁", "搜索频繁", "过于频繁", "请稍后再试",  # 完整短语
+                "频繁请", "稍后再试", "频繁",                    # 截断片段兜底
+            )
             if popup_rect:
                 t_popup_ocr_start = time.time()
                 for ocr_attempt in range(2):
@@ -951,6 +958,17 @@ class WeChatController:
                         img = _screenshot_region(*popup_rect)
                         if img is not None:
                             try:
+                                # 先检测"频繁"限制提示
+                                for target in rate_limit_targets:
+                                    if _ocr_contains_text(img, target, glog=self._emit_log):
+                                        has_rate_limit = True
+                                        hit_target = target
+                                        self._emit_log(f"检测到搜索限制提示: '{target}'")
+                                        break
+                                if has_rate_limit:
+                                    break
+
+                                # 再检测正常账号特征
                                 for target in popup_targets:
                                     if _ocr_contains_text(img, target, glog=self._emit_log):
                                         has_add_button = True
@@ -976,11 +994,14 @@ class WeChatController:
                     except Exception as e:
                         self._emit_log(f"OCR弹窗检测异常(第{ocr_attempt+1}次): {e}")
                 self._emit_log(f"OCR弹窗检测: 截图{popup_rect[2]-popup_rect[0]}x{popup_rect[3]-popup_rect[1]} "
-                               f"→ {'找到' if has_add_button else '未找到'}'{hit_target or '添加到通讯录'}'"
-                               f" (OCR耗时{time.time()-t_popup_ocr_start:.1f}秒)")
+                               f"→ {'频繁限制' if has_rate_limit else ('找到' if has_add_button else '未找到')}"
+                               f"'{hit_target or '添加到通讯录'}' (OCR耗时{time.time()-t_popup_ocr_start:.1f}秒)")
 
-            # 判断逻辑
-            if has_add_button:
+            # 判断逻辑（优先检测频繁限制）
+            if has_rate_limit:
+                self._emit_log("弹窗: 检测到'频繁'限制 → 搜索受限")
+                return ("rate_limit", f"检测到'{hit_target}'")
+            elif has_add_button:
                 self._emit_log("弹窗: 有'添加到通讯录' → 正常")
                 return ("normal", "(已识别按钮)")
             elif popup_rect:

@@ -42,6 +42,7 @@ pip install -r requirements.txt          # 安装依赖
 python main.py                           # 源码运行
 python diagnose_wechat_window.py         # 诊断 — 列出所有顶层窗口类名/标题/位置
 build_exe.bat                            # 一键打包（推荐，等效 pyinstaller --clean WeChatChecker.spec）
+python -m pytest tests/ -v               # 运行单元测试（仅 config_manager 和 ip_switcher，不含 Windows API）
 ```
 
 ## 架构
@@ -53,10 +54,13 @@ main.py                 # tkinter GUI 主程序（WeChatCheckerApp）
   │   ├── telegram_notifier.py  # Telegram Bot 通知（urllib，无外部依赖）
   │   └── ip_switcher.py        # IP自动切换（Clash API / 自定义命令，纯标准库）
   ├── config_manager.py # 配置读写（config.json）
+  ├── abnormal_panel.py # 异常账号面板（AbnormalEntry dataclass + 警报）
+  ├── ip_panel.py       # IP切换面板（当前IP显示 + 切换记录）
   └── logger_setup.py   # 日志（按天滚动，保留7天）
 
 hooks/hook-wechat_controller.py  # PyInstaller hook
 WeChatChecker.spec               # PyInstaller spec — 显式管理所有 hiddenimports 和 datas
+tests/                           # 单元测试（仅 config_manager、ip_switcher，无 Windows API 依赖）
 ```
 
 **依赖**：`uiautomation`(窗口查找) + `psutil`(进程检测) + `mss`+`Pillow`+`pytesseract`(OCR链路) + `pyinstaller`(仅打包)
@@ -195,6 +199,10 @@ Tesseract 打包：CI 中 `choco install tesseract-ocr` → 复制 exe+dll → �
 ## CI/CD
 
 推送 main 或手动触发 → `windows-latest` 构建 → `actions/upload-artifact@v4` 上传 `dist/`。详见 `.github/workflows/build.yml`。
+
+## 测试
+
+单元测试在 `tests/` 目录，仅覆盖纯 Python 模块（config_manager、ip_switcher），不含 Windows API 依赖。可在 Mac 上运行 `python -m pytest tests/ -v`。wechat_controller 因依赖 win32gui/uiautomation/mss，无法在 Mac 上测试。
 
 ## 配置文件
 
