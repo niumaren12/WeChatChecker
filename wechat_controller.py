@@ -856,8 +856,8 @@ class WeChatController:
         except Exception as e2:
             self._emit_log(f"OCR调试输出异常: {e2}", "error")
 
-        self._emit_log("OCR 未找到下拉菜单中的'网络查找'项", "error")
-        return False
+        self._emit_log("OCR 未找到下拉菜单中的'网络查找'项，可能窗口失焦", "error")
+        return "retry"  # 返回特殊状态，触发重新激活+重新输入
 
     # ==================== 弹窗检测 ====================
 
@@ -1145,20 +1145,42 @@ class WeChatController:
 
             self._sleep(0.3)
 
-            # 2. 聚焦搜索框
-            if not self.focus_search_box():
-                return ("error", "无法聚焦搜索框")
+            # 2-4. 聚焦搜索框 → 输入微信号 → 点击下拉项（支持重试）
+            max_dropdown_retry = 2  # 最多重试2次
+            for retry in range(max_dropdown_retry):
+                # 2. 聚焦搜索框
+                if not self.focus_search_box():
+                    return ("error", "无法聚焦搜索框")
 
-            self._sleep(0.5)
+                self._sleep(0.5)
 
-            # 3. 输入微信号
-            if not self.input_wechat_id(wechat_id):
-                return ("error", "无法输入微信号")
+                # 3. 输入微信号
+                if not self.input_wechat_id(wechat_id):
+                    return ("error", "无法输入微信号")
 
-            self._sleep(0.5)
+                self._sleep(0.5)
 
-            # 4. 点击下拉项
-            if not self.click_dropdown_item():
+                # 4. 点击下拉项
+                result = self.click_dropdown_item()
+                if result is True:
+                    break  # 成功找到下拉项，继续后续流程
+                elif result == "retry":
+                    # 检测不到下拉菜单，可能是失焦，重新激活+输入
+                    self._emit_log(f"下拉菜单未检测到，重新激活微信窗口并输入 (重试 {retry+1}/{max_dropdown_retry})")
+                    # 重试前先清空搜索框
+                    try:
+                        self.clear_search()
+                    except Exception:
+                        pass
+                    self._sleep(0.3)
+                    # 重新激活窗口
+                    if not self.activate_window():
+                        return ("error", "无法激活微信窗口")
+                    self._sleep(0.3)
+                else:
+                    return ("abnormal", "搜索无结果或无法点开详情")
+            else:
+                # 重试次数用尽
                 return ("abnormal", "搜索无结果或无法点开详情")
 
             # OCR/点击期间用户可能点了停止或暂停，立即退出
