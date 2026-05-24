@@ -1146,8 +1146,8 @@ class WeChatController:
             self._sleep(0.3)
 
             # 2-4. 聚焦搜索框 → 输入微信号 → 点击下拉项（支持重试）
-            max_dropdown_retry = 2  # 最多重试2次
-            for retry in range(max_dropdown_retry):
+            max_dropdown_attempts = 2  # 最多尝试2次
+            for attempt in range(max_dropdown_attempts):
                 # 2. 聚焦搜索框
                 if not self.focus_search_box():
                     return ("error", "无法聚焦搜索框")
@@ -1165,22 +1165,23 @@ class WeChatController:
                 if result is True:
                     break  # 成功找到下拉项，继续后续流程
                 elif result == "retry":
-                    # 检测不到下拉菜单，可能是失焦，重新激活+输入
-                    self._emit_log(f"下拉菜单未检测到，重新激活微信窗口并输入 (重试 {retry+1}/{max_dropdown_retry})")
-                    # 重试前先清空搜索框
-                    try:
-                        self.clear_search()
-                    except Exception:
-                        pass
-                    self._sleep(0.3)
-                    # 重新激活窗口
-                    if not self.activate_window():
-                        return ("error", "无法激活微信窗口")
-                    self._sleep(0.3)
+                    # 还有剩余尝试次数才执行清理
+                    if attempt < max_dropdown_attempts - 1:
+                        self._emit_log(f"下拉菜单未检测到，重新激活微信窗口并输入 (尝试 {attempt+2}/{max_dropdown_attempts})")
+                        # 先激活窗口，再清空搜索框（避免清空操作发到错误窗口）
+                        if not self.activate_window():
+                            return ("error", "无法激活微信窗口")
+                        self._sleep(0.3)
+                        # 清空搜索框
+                        try:
+                            self.clear_search()
+                        except Exception as e:
+                            logger.warning(f"清空搜索框失败: {e}")
+                        self._sleep(0.3)
                 else:
                     return ("abnormal", "搜索无结果或无法点开详情")
             else:
-                # 重试次数用尽
+                # 尝试次数用尽
                 return ("abnormal", "搜索无结果或无法点开详情")
 
             # OCR/点击期间用户可能点了停止或暂停，立即退出
