@@ -655,22 +655,21 @@ class WeChatController:
             self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
             return False
 
-        # 已有缓存窗口，直接用 Win32 API 激活
+        # 已有缓存窗口，只需 SetForegroundWindow（不用 ShowWindow/BringWindowToTop，破坏CEF渲染）
         if self.wechat_window is not None:
             try:
                 hwnd = self.wechat_window.NativeWindowHandle
                 if hwnd and ctypes.windll.user32.IsWindow(hwnd):
-                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    ctypes.windll.user32.BringWindowToTop(hwnd)
-                    self._sleep(0.1)
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    self._sleep(0.1)
+                    # 已经在最前，直接返回
                     if ctypes.windll.user32.GetForegroundWindow() == hwnd:
                         return True
-                    self._emit_log("窗口置顶失败，重新搜索...", "warn")
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.1)
+                    return True
+                # 句柄失效，清缓存重新搜索
+                self.wechat_window = None
             except Exception:
-                pass
-            self.wechat_window = None
+                self.wechat_window = None
 
         try:
             window = None
@@ -719,19 +718,13 @@ class WeChatController:
                 self._emit_log("找不到微信主窗口（微信是否已登录且未最小化到托盘？）", "error")
                 return False
 
-            # 用 Win32 API 强制激活微信窗口为前台窗口
+            # Win32 API 激活为前台窗口（不用 ShowWindow/BringWindowToTop，破坏CEF渲染）
             hwnd = window.NativeWindowHandle
             if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                ctypes.windll.user32.BringWindowToTop(hwnd)
-                for attempt in range(2):
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    self._sleep(0.2)
-                    if ctypes.windll.user32.GetForegroundWindow() == hwnd:
-                        self.wechat_window = window
-                        return True
-                self._emit_log("无法将微信窗口置顶（可能被其他程序拦截）", "error")
-                return False
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                self._sleep(0.1)
+                self.wechat_window = window
+                return True
             else:
                 window.SetActive()
                 self._sleep(0.3)
