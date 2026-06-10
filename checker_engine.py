@@ -446,10 +446,17 @@ class CheckerEngine:
                                 f"[错误] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "error"
                             )
 
-                        # 账号间等待（随机间隔）。操作出错时跳过，直接查下一个
+                        # 异常后延时 5 秒，给人反应时间（关闭声音等）
+                        if status in ("abnormal", "rate_limit") and not self._stop_event.is_set():
+                            self._emit_log("异常账号，等待 5 秒后继续...")
+                            self._wait_with_stop(5.0, "abnormal_pause")
+
+                        # 账号间等待（随机间隔）。异常/操作出错时跳过
                         if acc_idx < len(batch) - 1 and not self._stop_event.is_set():
                             if status == "error":
                                 self._emit_log("操作出错，跳过等待直接检查下一个...")
+                            elif status in ("abnormal", "rate_limit"):
+                                pass  # 已在上面延时5秒，跳过随机等待
                             else:
                                 wait_time = random.uniform(ai_min, ai_max)
                                 self._emit_log(f"等待 {wait_time:.1f} 秒后检查下一个...")

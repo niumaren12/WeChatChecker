@@ -518,11 +518,17 @@ class WeChatController:
         self._pause_event = event
 
     def _sleep(self, seconds):
-        """可中断的等待：检查停止信号，被停止时提前返回"""
-        if self._stop_event is None:
-            time.sleep(seconds)
-            return
-        self._stop_event.wait(seconds)
+        """可中断的等待：每0.2秒检查停止和暂停信号"""
+        interval = 0.2
+        elapsed = 0.0
+        while elapsed < seconds:
+            if self._stop_event and self._stop_event.is_set():
+                return
+            if self._pause_event and self._pause_event.is_set():
+                self._pause_event.wait(timeout=0.5)  # 冻结等待
+                continue
+            time.sleep(interval)
+            elapsed += interval
 
     def _emit_log(self, msg, level="info"):
         """同时写 logger 和 GUI 回调（取代各处重复的 _glog 闭包）"""
