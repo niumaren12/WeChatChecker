@@ -942,25 +942,48 @@ if __name__ == "__main__":
     _LOCK_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".instance.lock")
     if getattr(_sys_module, 'frozen', False):
         _LOCK_PATH = _os.path.join(_os.path.dirname(_sys_module.executable), ".instance.lock")
+    _HEARTBEAT_PATH = _LOCK_PATH.replace(".instance.lock", ".instance.heartbeat")
+
+    def _check_heartbeat_stale():
+        """若心跳文件超过30秒未更新，判定旧实例已卡死"""
+        try:
+            with open(_HEARTBEAT_PATH, 'r') as f:
+                last_beat = int(f.read().strip())
+            return (_time.time() - last_beat) > 30
+        except (OSError, ValueError):
+            return True  # 无心跳文件 → 认为已死
 
     def _acquire_lock(lock_path):
-        """尝试获取文件锁，失败表示已有实例运行"""
+        """尝试获取文件锁。旧PID存活但心跳过期时判定卡死，强制接管。"""
         try:
             fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
             _os.write(fd, str(_os.getpid()).encode())
-            return fd  # 成功，返回文件描述符
+            return fd  # 成功，无旧实例
         except FileExistsError:
-            # 检查锁文件中的PID是否还活着
             try:
                 with open(lock_path, 'r') as f:
                     old_pid = int(f.read().strip())
-                # 尝试打开进程句柄检查是否在运行
-                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, old_pid)  # PROCESS_QUERY_INFORMATION
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, old_pid)
                 if handle:
                     ctypes.windll.kernel32.CloseHandle(handle)
-                    return None  # 进程还在，锁有效
-                # 进程已退出，删除旧锁并重试
+                    # 进程存活，但检查心跳是否过期
+                    if _check_heartbeat_stale():
+                        logger.warning(f"旧实例 pid={old_pid} 超过30秒无心跳，判定卡死，强制接管")
+                        _os.remove(lock_path)
+                        try:
+                            _os.remove(_HEARTBEAT_PATH)
+                        except OSError:
+                            pass
+                        fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+                        _os.write(fd, str(_os.getpid()).encode())
+                        return fd
+                    return None  # 进程存活且心跳正常
+                # 进程已退出
                 _os.remove(lock_path)
+                try:
+                    _os.remove(_HEARTBEAT_PATH)
+                except OSError:
+                    pass
                 fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
                 _os.write(fd, str(_os.getpid()).encode())
                 return fd

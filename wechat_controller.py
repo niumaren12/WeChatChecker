@@ -535,6 +535,40 @@ class WeChatController:
         if self._gui_log:
             self._gui_log(msg)
 
+    def _safe_uia_exists(self, control, hard_timeout=3.0, label=""):
+        """在独立线程中运行 control.Exists()，加硬超时。
+
+        UIA Exists() 的 maxSearchSeconds 依赖 COM RPC 消息分发，若微信 CEF
+        界面线程不响应，COM RPC 会永久阻塞。本方法用独立线程执行 Exists()
+        并用 join(timeout) 做硬时限——超时未返回即判为 COM 死锁，放弃线程。
+
+        Returns True if control was found within hard_timeout, False otherwise.
+        """
+        import threading as _thr
+        result = [False]
+        done = [False]
+
+        def _uia_thread():
+            try:
+                result[0] = control.Exists(maxSearchSeconds=hard_timeout)
+            except Exception:
+                pass
+            finally:
+                done[0] = True
+
+        t = _thr.Thread(target=_uia_thread, daemon=True)
+        t.start()
+        t.join(timeout=hard_timeout + 1.0)
+
+        if done[0]:
+            return result[0]
+
+        logger.warning(
+            f"_safe_uia_exists 超时 ({hard_timeout}s): {label or control}，"
+            "UIA/COM 可能死锁，放弃本次搜索"
+        )
+        return False
+
     # ==================== 窗口管理 ====================
 
     def is_wechat_running(self):
@@ -569,14 +603,14 @@ class WeChatController:
                 for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
                     try:
                         window = auto.WindowControl(searchDepth=1, ClassName=class_name)
-                        if window.Exists(maxSearchSeconds=0.3):
+                        if self._safe_uia_exists(window, hard_timeout=1.0, label=f"is_wechat_running:{class_name}"):
                             logger.debug(f"通过 uiautomation 类名 {class_name} 检测到微信窗口")
                             return True
                     except Exception:
                         continue
                 try:
                     window = auto.WindowControl(searchDepth=1, Name="微信")
-                    if window.Exists(maxSearchSeconds=0.3):
+                    if self._safe_uia_exists(window, hard_timeout=1.0, label="is_wechat_running:微信"):
                         logger.debug("通过 uiautomation 标题检测到微信窗口")
                         return True
                 except Exception:
@@ -649,7 +683,7 @@ class WeChatController:
                 for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
                     try:
                         w = auto.WindowControl(searchDepth=1, ClassName=class_name)
-                        if w.Exists(maxSearchSeconds=0.3):
+                        if self._safe_uia_exists(w, hard_timeout=1.0, label=f"activate_window:{class_name}"):
                             window = w
                             logger.debug(f"UIA 通过类名找到: {class_name}")
                             break
@@ -659,7 +693,7 @@ class WeChatController:
                 if window is None:
                     try:
                         w = auto.WindowControl(searchDepth=1, Name="微信")
-                        if w.Exists(maxSearchSeconds=0.3):
+                        if self._safe_uia_exists(w, hard_timeout=1.0, label="activate_window:微信"):
                             window = w
                             logger.debug("UIA 通过标题找到微信窗口")
                     except Exception:
@@ -901,10 +935,11 @@ class WeChatController:
             # 第1级：搜索较深层的独立窗口（searchDepth=3）
             popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
             popup_level = None  # 记录找到弹窗的搜索级别
+            self._emit_log(f"UIA搜索弹窗(WindowControl, depth=3)...")
             for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
-                    if w.Exists(maxSearchSeconds=0.8):
+                    if self._safe_uia_exists(w, hard_timeout=3.0, label=f"popup_WindowControl:{title}"):
                         popup = w
                         popup_level = "独立窗口(Level1)"
                         self._emit_log(f"找到弹窗({popup_level}): {title}")
@@ -912,12 +947,13 @@ class WeChatController:
                 except Exception:
                     continue
 
-            # 第2级：在微信主窗口内搜索面板（PaneControl）
+            # 第2级：在微信主窗口内搜索面板（PaneControl, depth=5）
             if popup is None and self.wechat_window:
+                self._emit_log(f"UIA搜索弹窗(PaneControl, depth=5)...")
                 for title in popup_titles:
                     try:
-                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
-                        if pane.Exists(maxSearchSeconds=0.8):
+                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
+                        if self._safe_uia_exists(pane, hard_timeout=3.0, label=f"popup_PaneControl:{title}"):
                             popup = pane
                             popup_level = "主窗口内面板(Level2)"
                             self._emit_log(f"找到弹窗({popup_level}): {title}")
@@ -1052,7 +1088,7 @@ class WeChatController:
             for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
-                    if w.Exists(maxSearchSeconds=0.5):
+                    if self._safe_uia_exists(w, hard_timeout=2.0, label=f"close_WindowControl:{title}"):
                         popup = w
                         break
                 except Exception:
@@ -1062,8 +1098,8 @@ class WeChatController:
             if popup is None and self.wechat_window:
                 for title in popup_titles:
                     try:
-                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
-                        if pane.Exists(maxSearchSeconds=0.5):
+                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
+                        if self._safe_uia_exists(pane, hard_timeout=2.0, label=f"close_PaneControl:{title}"):
                             popup = pane
                             break
                     except Exception:
@@ -1109,7 +1145,7 @@ class WeChatController:
         for title in popup_titles:
             try:
                 w = auto.WindowControl(Name=title, searchDepth=3)
-                if w.Exists(maxSearchSeconds=0.3):
+                if self._safe_uia_exists(w, hard_timeout=1.0, label=f"verify_close_WindowControl:{title}"):
                     self._emit_log(f"弹窗关闭失败(仍存在): {title}", "error")
                     return
             except Exception:
@@ -1117,8 +1153,8 @@ class WeChatController:
         if self.wechat_window:
             for title in popup_titles:
                 try:
-                    pane = self.wechat_window.PaneControl(Name=title, searchDepth=10)
-                    if pane.Exists(maxSearchSeconds=0.3):
+                    pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
+                    if self._safe_uia_exists(pane, hard_timeout=1.0, label=f"verify_close_PaneControl:{title}"):
                         self._emit_log(f"弹窗关闭失败(面板仍存在): {title}", "error")
                         return
                 except Exception:

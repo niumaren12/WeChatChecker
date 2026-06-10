@@ -32,6 +32,14 @@ class CheckerEngine:
         self.wechat.set_stop_event(self._stop_event)  # 注入停止信号
         self.wechat.set_pause_event(self._pause_event) # 注入暂停信号
 
+        # 心跳文件路径 — 供单实例锁检测旧实例卡死
+        import sys as _sys, os as _os
+        if getattr(_sys, 'frozen', False):
+            _app_dir = _os.path.dirname(_sys.executable)
+        else:
+            _app_dir = _os.path.dirname(_os.path.abspath(__file__))
+        self._heartbeat_path = _os.path.join(_app_dir, ".instance.heartbeat")
+
         # Telegram 通知器
         self._telegram_notifier = TelegramNotifier(
             enabled=config_mgr.get("telegram_enabled", False),
@@ -75,6 +83,14 @@ class CheckerEngine:
         """仅转发到 GUI（供 WeChatController 回调，避免重复写 logger）"""
         if self.on_log:
             self.on_log(msg)
+
+    def _update_heartbeat(self):
+        """写入心跳文件，供单实例锁检测旧实例是否卡死"""
+        try:
+            with open(self._heartbeat_path, 'w') as f:
+                f.write(str(int(time.time())))
+        except OSError:
+            pass
 
     def _emit_status(self, text):
         if self.on_status:
@@ -302,6 +318,7 @@ class CheckerEngine:
         try:
             while not self._stop_event.is_set() and round_num < max_rounds:
                 round_num += 1
+                self._update_heartbeat()
                 self.wechat.wechat_window = None  # 每轮强制刷新 UIA 缓存，避免脏控件树
 
                 # 恢复时刷新ID列表和配置
@@ -437,6 +454,7 @@ class CheckerEngine:
 
                     total_checked += len(batch)
                     batch_counter += 1
+                    self._update_heartbeat()
 
                     # 批次间等待（含IP切换）—— 仅非最后一批
                     if batch_idx < len(batches) - 1 and not self._stop_event.is_set():
@@ -484,6 +502,11 @@ class CheckerEngine:
             self._emit_log(traceback.format_exc(), "error")
 
         finally:
+            # 删除心跳文件
+            try:
+                os.remove(self._heartbeat_path)
+            except OSError:
+                pass
             # 释放 COM
             if _com_ctypes is not None:
                 try:
