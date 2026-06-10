@@ -644,6 +644,8 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         # 根据等待类型显示不同前缀
         if label == "account":
             prefix = "下一号"
+        elif label == "abnormal_pause":
+            prefix = "异常暂停"
         elif label.startswith("batch_r"):
             prefix = "下一批"
         elif label.startswith("round_r"):

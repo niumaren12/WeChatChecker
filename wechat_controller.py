@@ -508,6 +508,7 @@ class WeChatController:
         self._stop_event = None  # 停止信号，由引擎注入
         self._pause_event = None # 暂停信号，由引擎注入
         self._last_window_rect = None  # 上一次窗口位置尺寸，用于检测变化
+        self._uia_timeout_count = 0     # UIA 超时计数器
 
     def set_stop_event(self, event):
         """注入停止信号，用于中断长时间等待"""
@@ -518,7 +519,10 @@ class WeChatController:
         self._pause_event = event
 
     def _sleep(self, seconds):
-        """可中断的等待：每0.2秒检查停止和暂停信号"""
+        """可中断的等待：短延迟直接sleep，长延迟(>=0.5s)每0.2秒检查停止/暂停"""
+        if seconds < 0.5:
+            time.sleep(seconds)
+            return
         interval = 0.2
         elapsed = 0.0
         while elapsed < seconds:
@@ -569,10 +573,16 @@ class WeChatController:
         if done[0]:
             return result[0]
 
+        self._uia_timeout_count += 1
         logger.warning(
             f"_safe_uia_exists 超时 ({hard_timeout}s): {label or control}，"
-            "UIA/COM 可能死锁，放弃本次搜索"
+            f"UIA/COM 可能死锁，放弃本次搜索 (累计{self._uia_timeout_count}次)"
         )
+        if self._uia_timeout_count >= 20:
+            logger.error(
+                f"_safe_uia_exists 累计超时 {self._uia_timeout_count} 次，"
+                "建议重启程序以释放泄漏的COM资源"
+            )
         return False
 
     # ==================== 窗口管理 ====================
@@ -1104,10 +1114,15 @@ class WeChatController:
         如果弹窗残留，下个号的 check_popup_status 会检测到并正确报告。
         """
         for attempt in range(3):
+            # 先让弹窗获得焦点，确保 ESC 发送到正确窗口
+            hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
+            if hwnd:
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                self._sleep(0.1)
             _press_key(_VK["escape"])
-            self._sleep(0.4)
+            self._sleep(0.3)
 
-        # 快速 Win32 检测弹窗是否还在（仅一个 FindWindowW，毫秒级）
+        # 快速 Win32 检测弹窗是否还在（毫秒级）
         hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
         if not hwnd:
             logger.debug("弹窗已关闭")
