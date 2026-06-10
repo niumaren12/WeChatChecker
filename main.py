@@ -919,6 +919,11 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
 
 # ==================== 入口 ====================
 if __name__ == "__main__":
+    # 最早期的启动日志（在 GUI 创建之前，确保启动阶段有迹可查）
+    logger.info("=" * 50)
+    logger.info(f"WeChatChecker v1.2 启动 — {_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Python: {sys.version} | 平台: {sys.platform}")
+
     # 平台检查：非 Windows 环境下 uiautomation/c-types 不可用
     if sys.platform != "win32":
         import tkinter.messagebox as _mb
@@ -929,5 +934,38 @@ if __name__ == "__main__":
             "请在 Windows 10+ 上运行此程序。",
         )
         sys.exit(1)
-    app = WeChatCheckerApp()
-    app.run()
+
+    # 单实例互斥锁 — 防止多开导致剪贴板/COM 冲突和僵尸进程堆积
+    _MUTEX_NAME = "Global\\WeChatChecker_SingleInstance_1.2"
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "微信账号检查工具已在运行中，请检查系统托盘或任务栏。\n"
+            "如确认未运行，请打开任务管理器结束 WeChatChecker.exe 进程后重试。",
+            "提示 — 程序已在运行",
+            0x40,  # MB_ICONINFORMATION
+        )
+        logger.warning("检测到已有实例运行，退出")
+        sys.exit(0)
+    logger.info("单实例检查通过")
+
+    # 全局异常捕获 — 确保任何启动崩溃都被记录
+    try:
+        app = WeChatCheckerApp()
+        app.run()
+    except Exception as _e:
+        import traceback as _tb
+        _err_msg = f"程序启动失败: {_e}\n{_tb.format_exc()}"
+        logger.critical(_err_msg)
+        # 尝试弹窗告知用户
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"程序启动失败:\n{_e}\n\n详细信息已写入日志文件 logs/checker.log",
+                "启动错误",
+                0x10,  # MB_ICONERROR
+            )
+        except Exception:
+            pass
+        sys.exit(1)

@@ -103,7 +103,7 @@ def setup_logger(name="WeChatChecker"):
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # 文件 Handler：按天 or 5MB 滚动，保留 7 天
+    # 文件 Handler：按天 or 5MB 滚动，保留 7 天，立即刷新每条日志
     file_handler = TimedSizeRotatingFileHandler(
         log_path, max_bytes=MAX_BYTES,
         when="midnight", interval=1, backupCount=7, encoding="utf-8",
@@ -118,6 +118,11 @@ def setup_logger(name="WeChatChecker"):
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+    # 强制立即刷新：每条日志直接写入磁盘，防止程序卡死时日志丢失
+    def _flush_on_emit(record):
+        file_handler.flush()
+    file_handler.addFilter(type('FlushFilter', (), {'filter': staticmethod(_flush_on_emit)})())
 
     return logger
 
