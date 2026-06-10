@@ -936,28 +936,37 @@ class WeChatController:
             popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
             popup_level = None  # 记录找到弹窗的搜索级别
             self._emit_log(f"UIA搜索弹窗(WindowControl, depth=3)...")
+            level1_timeout = False
             for title in popup_titles:
                 try:
                     w = auto.WindowControl(Name=title, searchDepth=3)
-                    if self._safe_uia_exists(w, hard_timeout=3.0, label=f"popup_WindowControl:{title}"):
+                    found = self._safe_uia_exists(w, hard_timeout=2.0, label=f"popup_WindowControl:{title}")
+                    if found:
                         popup = w
                         popup_level = "独立窗口(Level1)"
                         self._emit_log(f"找到弹窗({popup_level}): {title}")
+                        break
+                    if title == popup_titles[0]:
+                        level1_timeout = True  # 首个title超时，跳过同级剩余
                         break
                 except Exception:
                     continue
 
             # 第2级：在微信主窗口内搜索面板（PaneControl, depth=5）
             if popup is None and self.wechat_window:
-                self._emit_log(f"UIA搜索弹窗(PaneControl, depth=5)...")
+                if not level1_timeout:
+                    self._emit_log(f"UIA搜索弹窗(PaneControl, depth=5)...")
                 for title in popup_titles:
                     try:
                         pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
-                        if self._safe_uia_exists(pane, hard_timeout=3.0, label=f"popup_PaneControl:{title}"):
+                        found = self._safe_uia_exists(pane, hard_timeout=2.0, label=f"popup_PaneControl:{title}")
+                        if found:
                             popup = pane
                             popup_level = "主窗口内面板(Level2)"
                             self._emit_log(f"找到弹窗({popup_level}): {title}")
                             break
+                        if title == popup_titles[0] and not level1_timeout:
+                            break  # 首个title PaneControl也超时，放弃本级
                     except Exception:
                         continue
 
@@ -1070,95 +1079,38 @@ class WeChatController:
             return ("not_found", "")
 
     def close_popup(self):
-        """关闭弹窗 - 两级搜索 → 激活 → ESC → 验证关闭，最多重试3次。
+        """关闭弹窗：ESC×3 → 鼠标点击备用。
 
-        与 check_popup_status() 对齐：同时搜索独立窗口（WindowControl）和
-        主窗口内面板（PaneControl），解决 CEF 内部面板 ESC 关闭后仍被
-        UIA 找到导致下一号连锁失败的问题。
+        不再使用 UIA 搜索验证（几秒到几十秒延迟），信任 ESC 关闭。
+        如果弹窗残留，下个号的 check_popup_status 会检测到并正确报告。
         """
-        if not UIA_AVAILABLE:
-            return
-        popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
-
         for attempt in range(3):
-            # 两级搜索弹窗（与 check_popup_status 对齐）
-            popup = None
-
-            # 第1级：独立窗口
-            for title in popup_titles:
-                try:
-                    w = auto.WindowControl(Name=title, searchDepth=3)
-                    if self._safe_uia_exists(w, hard_timeout=2.0, label=f"close_WindowControl:{title}"):
-                        popup = w
-                        break
-                except Exception:
-                    continue
-
-            # 第2级：主窗口内面板（CEF 内部面板，之前漏掉的搜索）
-            if popup is None and self.wechat_window:
-                for title in popup_titles:
-                    try:
-                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
-                        if self._safe_uia_exists(pane, hard_timeout=2.0, label=f"close_PaneControl:{title}"):
-                            popup = pane
-                            break
-                    except Exception:
-                        continue
-
-            if popup is None:
-                logger.debug("弹窗已关闭")
-                return
-
-            # 激活弹窗使其能接收 ESC 按键
-            try:
-                hwnd = popup.NativeWindowHandle
-                if hwnd:
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    self._sleep(0.2)
-            except Exception:
-                pass
-
-            # 发送 ESC 关闭弹窗
             _press_key(_VK["escape"])
-            self._sleep(0.5)
+            self._sleep(0.4)
 
-        # 3次 ESC 均失败，改用鼠标点击微信窗口左侧（聊天列表区域）关闭面板
-        self._emit_log("ESC关闭弹窗失败，尝试鼠标点击关闭...", "warn")
+        # 快速 Win32 检测弹窗是否还在（仅一个 FindWindowW，毫秒级）
+        hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
+        if not hwnd:
+            logger.debug("弹窗已关闭")
+            return
+
+        # ESC 未关闭，鼠标点击微信窗口左侧关闭面板
+        self._emit_log("ESC未关闭弹窗，尝试鼠标点击...", "warn")
         try:
             if self.wechat_window:
-                hwnd = self.wechat_window.NativeWindowHandle
-                if hwnd:
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                hwnd_wx = self.wechat_window.NativeWindowHandle
+                if hwnd_wx:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd_wx)
                     self._sleep(0.2)
                     rect = ctypes.wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    # 点击窗口左侧 15% 位置（聊天列表区域），可关闭右侧面板
+                    ctypes.windll.user32.GetWindowRect(hwnd_wx, ctypes.byref(rect))
                     click_x = rect.left + int((rect.right - rect.left) * 0.15)
                     click_y = rect.top + int((rect.bottom - rect.top) * 0.5)
                     _mouse_click(click_x, click_y)
-                    self._sleep(0.5)
+                    self._sleep(0.3)
         except Exception as e:
             logger.warning(f"鼠标点击关闭弹窗失败: {e}")
 
-        # 最终验证：弹窗是否真的关闭了（两级搜索确认）
-        self._sleep(0.3)
-        for title in popup_titles:
-            try:
-                w = auto.WindowControl(Name=title, searchDepth=3)
-                if self._safe_uia_exists(w, hard_timeout=1.0, label=f"verify_close_WindowControl:{title}"):
-                    self._emit_log(f"弹窗关闭失败(仍存在): {title}", "error")
-                    return
-            except Exception:
-                continue
-        if self.wechat_window:
-            for title in popup_titles:
-                try:
-                    pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
-                    if self._safe_uia_exists(pane, hard_timeout=1.0, label=f"verify_close_PaneControl:{title}"):
-                        self._emit_log(f"弹窗关闭失败(面板仍存在): {title}", "error")
-                        return
-                except Exception:
-                    continue
         logger.debug("弹窗已关闭(鼠标点击)")
 
     def clear_search(self):
