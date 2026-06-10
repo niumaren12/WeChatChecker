@@ -397,6 +397,9 @@ class CheckerEngine:
                                 break
                             self._emit_log(f"===== 继续检查 at {time.strftime('%H:%M:%S')}，重查 {wechat_id} =====")
                             self._emit_status("检查中...")
+                            # 暂停期间微信窗口可能失焦，重新激活
+                            self.wechat.activate_window()
+                            self.wechat._sleep(0.5)
                             # 重查同一个号，重新计时
                             t_start = time.time()
                             status, detail = self.wechat.check_single_account(wechat_id)

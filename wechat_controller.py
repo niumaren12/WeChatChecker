@@ -816,9 +816,9 @@ class WeChatController:
 
     def click_dropdown_item(self):
         """
-        OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击
-        截图搜索框下方区域 → Tesseract 识别 → 鼠标点击文字中心
-        同区域两次重试：第1次等2s，失败再等1.5s重试（应对下拉加载慢）
+        OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击。
+        每次截图只做一次 OCR，多个关键词共用结果（之前每个关键词都重新 OCR）。
+        同区域两次截图重试：第1次等2s，失败再等1.5s（应对下拉加载慢）。
         """
         self._sleep(2.0)  # 等待下拉菜单加载
 
@@ -836,7 +836,6 @@ class WeChatController:
                     self._emit_log(f"微信窗口位置: left={r.left} top={r.top} "
                                    f"right={r.right} bottom={r.bottom} "
                                    f"({win_w}x{win_h})")
-                    # 检测窗口尺寸明显变化（可能影响OCR）
                     if self._last_window_rect:
                         old_w = self._last_window_rect[2] - self._last_window_rect[0]
                         old_h = self._last_window_rect[3] - self._last_window_rect[1]
@@ -858,7 +857,6 @@ class WeChatController:
         win_left, win_top, win_right, win_bottom = rect
         win_w = win_right - win_left
         win_h = win_bottom - win_top
-        # 下拉区域：窗口左上(2%, 8%) 到 右下(78%, 72%)
         region = (win_left + int(win_w * 0.02), win_top + int(win_h * 0.08),
                   win_left + int(win_w * 0.78), win_top + int(win_h * 0.72))
 
@@ -875,12 +873,23 @@ class WeChatController:
             self._emit_log(f"截图成功 {img.width}x{img.height}，开始OCR识别...")
             t_ocr_start = time.time()
             try:
-                # 多级匹配：从最精确到最宽松
+                # 一次 OCR，多个关键词共用结果（之前每个关键词都重新OCR，浪费）
+                entries, rows, full_text = _ocr_get_text_entries(img)
+                if not entries:
+                    continue
+
                 for target in ("网络查找", "QQ号", "络找", "查找", "络查"):
-                    matches = _ocr_find_text(img, target, region[0], region[1], glog=self._emit_log)
-                    if matches:
-                        cx, cy, text = matches[0]
-                        self._emit_log(f"OCR 找到下拉项('{target}'): '{text}' → 后台点击 ({cx}, {cy}) "
+                    first, last = _find_text_in_entries(entries, rows, target)
+                    if first and last:
+                        cx = region[0] + (first["x"] + last["x"] + last["w"]) // 2
+                        cy = region[1] + (first["y"] + first["h"] // 2)
+                        # 同行拼接日志
+                        for row in rows:
+                            merged = "".join(e["text"] for e in row)
+                            if target in merged:
+                                self._emit_log(f"同行拼接匹配: '{target}' 在 '{merged[:30]}' 中")
+                                break
+                        self._emit_log(f"OCR 找到下拉项('{target}'): '{target}' → 后台点击 ({cx}, {cy}) "
                                        f"(OCR耗时{time.time()-t_ocr_start:.1f}秒)")
                         if hwnd:
                             try:
@@ -891,6 +900,10 @@ class WeChatController:
                         _mouse_click(cx, cy)
                         self._sleep(2.0)
                         return True
+
+                # 所有关键词未匹配，记录诊断
+                self._emit_log(f"OCR未匹配任何下拉关键词 ({len(entries)}条目) "
+                               f"全文前30字: {full_text[:30]}", "warn")
             finally:
                 img.close()
 
