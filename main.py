@@ -935,22 +935,56 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    # 单实例互斥锁 — 防止多开导致剪贴板/COM 冲突和僵尸进程堆积
+    # 单实例锁 — 防止多开导致剪贴板/COM 冲突和僵尸进程堆积
     import ctypes
-    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    _MUTEX_NAME = "Global\\WeChatChecker_SingleInstance_1.2"
-    _kernel32.CreateMutexW(None, False, _MUTEX_NAME)
-    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+    import os as _os
+    import sys as _sys_module
+    _LOCK_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".instance.lock")
+    if getattr(_sys_module, 'frozen', False):
+        _LOCK_PATH = _os.path.join(_os.path.dirname(_sys_module.executable), ".instance.lock")
+
+    def _acquire_lock(lock_path):
+        """尝试获取文件锁，失败表示已有实例运行"""
+        try:
+            fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+            _os.write(fd, str(_os.getpid()).encode())
+            return fd  # 成功，返回文件描述符
+        except FileExistsError:
+            # 检查锁文件中的PID是否还活着
+            try:
+                with open(lock_path, 'r') as f:
+                    old_pid = int(f.read().strip())
+                # 尝试打开进程句柄检查是否在运行
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, old_pid)  # PROCESS_QUERY_INFORMATION
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return None  # 进程还在，锁有效
+                # 进程已退出，删除旧锁并重试
+                _os.remove(lock_path)
+                fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+                _os.write(fd, str(_os.getpid()).encode())
+                return fd
+            except (ValueError, OSError):
+                try:
+                    _os.remove(lock_path)
+                except OSError:
+                    pass
+                return _acquire_lock(lock_path)  # 递归重试一次
+        except OSError:
+            return None
+
+    _lock_fd = _acquire_lock(_LOCK_PATH)
+    if _lock_fd is None:
         ctypes.windll.user32.MessageBoxW(
             0,
             "微信账号检查工具已在运行中，请检查系统托盘或任务栏。\n"
             "如确认未运行，请打开任务管理器结束 WeChatChecker.exe 进程后重试。",
             "提示 — 程序已在运行",
-            0x40,  # MB_ICONINFORMATION
+            0x40,
         )
         logger.warning("检测到已有实例运行，退出")
         sys.exit(0)
-    logger.info("单实例检查通过")
+    logger.info(f"单实例检查通过 (pid={_os.getpid()})")
 
     # 全局异常捕获 — 确保任何启动崩溃都被记录
     try:
