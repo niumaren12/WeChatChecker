@@ -955,8 +955,8 @@ class WeChatController:
             return ("not_found", "")
 
         try:
-            # 等待弹窗出现（CEF 面板加载较慢）
-            self._sleep(2.0)
+            # 等待弹窗出现（click_dropdown_item内已等2s，这里0.5s足够）
+            self._sleep(0.5)
 
             # 查找弹窗 — 两级搜索：独立窗口 + 主窗口内面板
             popup = None
@@ -982,7 +982,7 @@ class WeChatController:
                     continue
 
             # 第2级：在微信主窗口内搜索面板（PaneControl, depth=5）
-            if popup is None and self.wechat_window:
+            if popup is None and self.wechat_window and not level1_timeout:
                 if not level1_timeout:
                     self._emit_log(f"UIA搜索弹窗(PaneControl, depth=5)...")
                 for title in popup_titles:
