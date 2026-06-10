@@ -958,48 +958,16 @@ class WeChatController:
             # 等待弹窗出现（click_dropdown_item内已等2s，这里0.5s足够）
             self._sleep(0.5)
 
-            # 查找弹窗 — 两级搜索：独立窗口 + 主窗口内面板
+            # Win32 FindWindowW 定位弹窗（毫秒级，不遍历UIA树，不干扰CEF渲染）
             popup = None
-
-            # 第1级：搜索较深层的独立窗口（searchDepth=3）
-            popup_titles = ["添加朋友", "详细信息", "联系人", "朋友验证", "新的朋友"]
-            popup_level = None  # 记录找到弹窗的搜索级别
-            self._emit_log(f"UIA搜索弹窗(WindowControl, depth=3)...")
-            level1_timeout = False
-            for title in popup_titles:
+            popup_hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
+            if popup_hwnd:
                 try:
-                    w = auto.WindowControl(Name=title, searchDepth=3)
-                    found = self._safe_uia_exists(w, hard_timeout=2.0, label=f"popup_WindowControl:{title}")
-                    if found:
-                        popup = w
-                        popup_level = "独立窗口(Level1)"
-                        self._emit_log(f"找到弹窗({popup_level}): {title}")
-                        break
-                    if title == popup_titles[0]:
-                        level1_timeout = True  # 首个title超时，跳过同级剩余
-                        break
+                    popup = auto.ControlFromHandle(popup_hwnd)
+                    self._emit_log(f"FindWindowW 找到弹窗: 添加朋友")
                 except Exception:
-                    continue
+                    pass
 
-            # 第2级：在微信主窗口内搜索面板（PaneControl, depth=5）
-            if popup is None and self.wechat_window and not level1_timeout:
-                if not level1_timeout:
-                    self._emit_log(f"UIA搜索弹窗(PaneControl, depth=5)...")
-                for title in popup_titles:
-                    try:
-                        pane = self.wechat_window.PaneControl(Name=title, searchDepth=5)
-                        found = self._safe_uia_exists(pane, hard_timeout=2.0, label=f"popup_PaneControl:{title}")
-                        if found:
-                            popup = pane
-                            popup_level = "主窗口内面板(Level2)"
-                            self._emit_log(f"找到弹窗({popup_level}): {title}")
-                            break
-                        if title == popup_titles[0] and not level1_timeout:
-                            break  # 首个title PaneControl也超时，放弃本级
-                    except Exception:
-                        continue
-
-            # 第1-2级均未找到弹窗，说明点击未生效，直接返回
             if popup is None:
                 self._emit_log("未找到弹窗，点击可能未生效")
                 return ("not_found", "")
