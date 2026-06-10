@@ -1085,21 +1085,16 @@ class WeChatController:
         如果弹窗残留，下个号的 check_popup_status 会检测到并正确报告。
         """
         for attempt in range(3):
-            # 先让弹窗获得焦点，确保 ESC 发送到正确窗口
             hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
-            if hwnd:
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
-                self._sleep(0.1)
+            if not hwnd:
+                logger.debug("弹窗已关闭")
+                return  # 弹窗没了，立即退出，避免ESC打中微信主窗口
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            self._sleep(0.1)
             _press_key(_VK["escape"])
             self._sleep(0.3)
 
-        # 快速 Win32 检测弹窗是否还在（毫秒级）
-        hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
-        if not hwnd:
-            logger.debug("弹窗已关闭")
-            return
-
-        # ESC 未关闭，鼠标点击微信窗口左侧关闭面板
+        # 3次 ESC 都没关掉
         self._emit_log("ESC未关闭弹窗，尝试鼠标点击...", "warn")
         try:
             if self.wechat_window:
