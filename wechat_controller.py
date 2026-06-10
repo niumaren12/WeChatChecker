@@ -1165,7 +1165,7 @@ class WeChatController:
             self._sleep(0.3)
 
             # 2-4. 聚焦搜索框 → 输入微信号 → 点击下拉项（支持重试）
-            max_dropdown_attempts = 2  # 最多尝试2次
+            max_dropdown_attempts = 3  # 无下拉菜单不是账号异常，多试几次
             for attempt in range(max_dropdown_attempts):
                 # 2. 聚焦搜索框
                 if not self.focus_search_box():
@@ -1187,21 +1187,19 @@ class WeChatController:
                     # 还有剩余尝试次数才执行清理
                     if attempt < max_dropdown_attempts - 1:
                         self._emit_log(f"下拉菜单未检测到，重新激活微信窗口并输入 (尝试 {attempt+2}/{max_dropdown_attempts})")
-                        # 先激活窗口，再清空搜索框（避免清空操作发到错误窗口）
                         if not self.activate_window():
                             return ("error", "无法激活微信窗口")
                         self._sleep(0.3)
-                        # 清空搜索框
                         try:
                             self.clear_search()
                         except Exception as e:
                             logger.warning(f"清空搜索框失败: {e}")
                         self._sleep(0.3)
                 else:
-                    return ("abnormal", "搜索无结果或无法点开详情")
+                    return ("error", "搜索无结果或无法点开详情")
             else:
-                # 尝试次数用尽
-                return ("abnormal", "搜索无结果或无法点开详情")
+                # 重试耗尽：无下拉菜单 ≠ 账号异常，返回 error 跳过等待直接查下一个
+                return ("error", "搜索无结果或无法点开详情")
 
             # OCR/点击期间用户可能点了停止或暂停，立即退出
             if self._stop_event and self._stop_event.is_set():
