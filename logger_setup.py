@@ -120,9 +120,14 @@ def setup_logger(name="WeChatChecker"):
     logger.addHandler(console_handler)
 
     # 强制立即刷新：每条日志直接写入磁盘，防止程序卡死时日志丢失
-    def _flush_on_emit(record):
-        file_handler.flush()
-    file_handler.addFilter(type('FlushFilter', (), {'filter': staticmethod(_flush_on_emit)})())
+    def _make_flush_filter(fh):
+        """创建刷新过滤器"""
+        def _flush_on_emit(record):
+            fh.flush()
+            return True  # 必须返回 True，否则日志会被过滤
+        return type('FlushFilter', (), {'filter': staticmethod(_flush_on_emit)})()
+
+    file_handler.addFilter(_make_flush_filter(file_handler))
 
     return logger
 

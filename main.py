@@ -936,6 +936,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # 单实例互斥锁 — 防止多开导致剪贴板/COM 冲突和僵尸进程堆积
+    import ctypes
     _MUTEX_NAME = "Global\\WeChatChecker_SingleInstance_1.2"
     _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
