@@ -937,9 +937,10 @@ if __name__ == "__main__":
 
     # 单实例互斥锁 — 防止多开导致剪贴板/COM 冲突和僵尸进程堆积
     import ctypes
+    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
     _MUTEX_NAME = "Global\\WeChatChecker_SingleInstance_1.2"
-    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    _kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(
             0,
             "微信账号检查工具已在运行中，请检查系统托盘或任务栏。\n"

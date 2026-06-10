@@ -598,7 +598,8 @@ class WeChatController:
     def activate_window(self):
         """
         将微信窗口置前激活。
-        首次搜索成功后缓存窗口句柄，后续调用直接用 Win32 API 激活（秒级）。
+        Win32 FindWindowW 定位 → ControlFromHandle 转 UIA 控件（快速可靠）。
+        首次成功后缓存窗口句柄，后续调用直接用 Win32 API 激活。
         """
         if not UIA_AVAILABLE:
             self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
@@ -611,44 +612,61 @@ class WeChatController:
                 if hwnd and ctypes.windll.user32.IsWindow(hwnd):
                     ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                     ctypes.windll.user32.BringWindowToTop(hwnd)
-                    # 尝试置顶，验证是否成功
-                    for attempt in range(2):
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        self._sleep(0.2)
-                        if ctypes.windll.user32.GetForegroundWindow() == hwnd:
-                            return True
-                    # 两次置顶均失败，清除缓存重新搜索
+                    self._sleep(0.1)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    self._sleep(0.1)
+                    if ctypes.windll.user32.GetForegroundWindow() == hwnd:
+                        return True
                     self._emit_log("窗口置顶失败，重新搜索...", "warn")
             except Exception:
                 pass
-            # 窗口已失效，清空缓存重新搜索
             self.wechat_window = None
 
         try:
             window = None
             self._emit_log("正在定位微信窗口...")
 
-            for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
-                try:
-                    w = auto.WindowControl(searchDepth=1, ClassName=class_name)
-                    if w.Exists(maxSearchSeconds=0.5):
-                        window = w
-                        logger.debug(f"通过类名找到微信窗口: {class_name}")
-                        break
-                except Exception:
-                    continue
+            # 优先用 Win32 FindWindowW（快，无 COM 依赖，不会卡死）
+            hwnd = None
+            for cls in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
+                hwnd = ctypes.windll.user32.FindWindowW(cls, None)
+                if hwnd:
+                    logger.debug(f"FindWindowW 通过类名找到: {cls}")
+                    break
+            if not hwnd:
+                hwnd = ctypes.windll.user32.FindWindowW(None, "微信")
+                if hwnd:
+                    logger.debug("FindWindowW 通过标题找到微信窗口")
 
-            if window is None:
+            if hwnd:
                 try:
-                    w = auto.WindowControl(searchDepth=1, Name="微信")
-                    if w.Exists(maxSearchSeconds=0.5):
-                        window = w
-                        logger.debug("通过标题找到微信窗口")
+                    window = auto.ControlFromHandle(hwnd)
                 except Exception:
                     pass
 
+            # Win32 未找到则回退到 UIA 搜索
             if window is None:
-                self._emit_log("找不到微信主窗口（类名可能已变化）", "error")
+                for class_name in ["WeChatMainWndForPC", "ChatWnd", "MainWindow"]:
+                    try:
+                        w = auto.WindowControl(searchDepth=1, ClassName=class_name)
+                        if w.Exists(maxSearchSeconds=0.3):
+                            window = w
+                            logger.debug(f"UIA 通过类名找到: {class_name}")
+                            break
+                    except Exception:
+                        continue
+
+                if window is None:
+                    try:
+                        w = auto.WindowControl(searchDepth=1, Name="微信")
+                        if w.Exists(maxSearchSeconds=0.3):
+                            window = w
+                            logger.debug("UIA 通过标题找到微信窗口")
+                    except Exception:
+                        pass
+
+            if window is None:
+                self._emit_log("找不到微信主窗口（微信是否已登录且未最小化到托盘？）", "error")
                 return False
 
             # 用 Win32 API 强制激活微信窗口为前台窗口
