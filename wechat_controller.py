@@ -961,6 +961,16 @@ class WeChatController:
                 except Exception:
                     pass
 
+            # FindWindowW 未找到则回退 UIA 搜索（CEF弹窗可能不暴露Win32标题）
+            if popup is None:
+                try:
+                    w = auto.WindowControl(Name="添加朋友", searchDepth=3)
+                    if self._safe_uia_exists(w, hard_timeout=1.5, label="popup_WinCtl:添加朋友"):
+                        popup = w
+                        self._emit_log(f"UIA 找到弹窗: 添加朋友")
+                except Exception:
+                    pass
+
             if popup is None:
                 self._emit_log("未找到弹窗，点击可能未生效")
                 return ("not_found", "")
