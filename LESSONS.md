@@ -100,6 +100,78 @@
 
 ---
 
+## 日志停在5月24日，之后再无新日志
+
+**问题**：程序在 Windows 上双击没反应，没有新日志。Mac 上拉下来的日志快照也停在 5 月 24 日。
+
+**原因**：3 层叠加 — ① Windows 上有 4 个僵尸进程（Session 0 和 Session 6 都有），占着剪贴板/COM 导致新进程卡死 ② 启动后第一条日志要等 500ms 才写（`_check_runtime_env`），启动阶段崩溃无迹可查 ③ 日志 `flush()` filter 没返回 `True` 导致所有日志被 drop ④ `ctypes` 没导入导致 `NameError` 崩溃。
+
+**解法**：运行时入口加最早期的 `logger.info`（GUI 创建前）→ 每条日志立即 `flush()` → 全局 `try/except` 捕获启动崩溃写日志 + 弹窗 → 单实例锁防多开。
+
+**避坑**：Logger setup 中 filter 必须返回 `True`，返回 `None` 等价于丢弃日志。GUI 应用启动阶段就需要日志，不能等到 GUI 初始化后再写。
+
+---
+
+## UIA Exists() COM 死锁 — 检查线程永久卡死
+
+**问题**：程序启动正常、GUI 显示正常，但点开始检查后卡在"正在定位微信窗口..."或弹窗检测，不写日志、不报错。
+
+**原因**：`uiautomation` 的 `Exists(maxSearchSeconds=0.8)` 依赖 COM RPC 消息分发。`maxSearchSeconds` 是**咨询性**的超时参数，不是硬时限 — 它通过 COM 消息循环计数计时，如果微信 CEF 界面线程不响应，COM RPC 调用就永久阻塞。
+
+**解法**：`_safe_uia_exists()` — 在独立 daemon 线程中执行 `control.Exists()`，主线程用 `thread.join(timeout+1)` 做硬时限。超时未返回 = COM 死锁，放弃线程返回 `False`。超时线程会泄漏 COM 资源，但 daemon 模式下进程退出时回收。≥20 次超时记录 error 建议重启。
+
+**避坑**：永远不要信任 uiautomation 的超时参数。任何 UI Automation 调用都要包装成可中断的形式。Win32 `FindWindowW` 零依赖无超时风险，优先使用。用 `ctypes.windll.kernel32.OpenProcess` 检查 PID 存活（替代 `GetLastError`）。
+
+---
+
+## close_popup() UIA 验证耗时 22 秒
+
+**问题**：每个号正常检测仅 ~15 秒，但关闭弹窗花了 22 秒（占总耗时 60%），全是 UIA 搜索验证的时间。
+
+**原因**：`close_popup()` 在弹窗已被 ESC 关闭后，仍用 UIA 搜索 5 个 WindowControl + 5 个 PaneControl 来"验证"弹窗关闭。每个 `Exists()` 硬超时 3 秒，全超时 = 30 秒。
+
+**解法**：`close_popup` 改掉全部 UIA 调用 — ESC×3 后仅一次 `FindWindowW("添加朋友")` 毫秒级验证。弹窗残留由下个号的 `check_popup_status` 兜底。弹窗存在时 ESC 前先 `SetForegroundWindow` 确保焦点正确。
+
+**避坑**：已验证存在的 UI 元素，不需要用同种方式再验证"消失"。Win32 API 毫秒级可靠且无 COM 依赖。
+
+---
+
+## OCR 下拉检测重复扫描 — 同一张截图 OCR 6 次
+
+**问题**：日志显示 153 个垃圾 OCR 条目被重复识别了 6 次，每次 3 秒 = 18 秒浪费，最终全失败。
+
+**原因**：`click_dropdown_item` 对每个关键词（5 个）都调用 `_ocr_find_text`，而 `_ocr_find_text` 内部每次都调 `_ocr_get_text_entries` 重新 OCR。同一张截图被扫了 5 次，如果重试则 10 次。
+
+**解法**：每张截图只 OCR 一次 → 得到 `entries, rows, full_text` → 5 个关键词对同一份结果用 `_find_text_in_entries` 匹配。从最坏 5×3 管道×2 截图 = 30 次 Tesseract，降到 2 次。
+
+**避坑**：OCR 结果对同一张图是不变的，多个关键词应该共享同一次 OCR 输出，而不是每个关键词重新扫描。
+
+---
+
+## _sleep() 不检查暂停信号 — 点击暂停后 20 秒才生效
+
+**问题**：点暂停后状态栏立即显示"已暂停"，但实际检查线程要继续跑完当前整个长操作（最多 20 秒）才真正暂停。
+
+**原因**：`_sleep()` 只检查 `_stop_event`，完全忽略 `_pause_event`。`click_dropdown_item`（2s sleep + 2 次 OCR ~6s）和 `check_popup_status`（2s sleep + UIA 搜索 + OCR ~8s）之间无暂停检查点。
+
+**解法**：`_sleep()` 改为每 0.2 秒轮询 `_stop_event` 和 `_pause_event`，暂停时 `_pause_event.wait()` 冻结。短延迟（< 0.5s）直接 `time.sleep()` 跳过轮询精度损失。暂停恢复后自动 `activate_window()` 再重查。
+
+**避坑**：暂停/停止信号必须是最高优先级的检查，任何 `sleep` 或等待循环都必须同时检查两个信号。
+
+---
+
+## 单实例 Mutex 在 PyInstaller 下失效
+
+**问题**：`Global\WeChatChecker_SingleInstance` Named Mutex + `GetLastError()` 检测不到多开，Windows 上同时 2-4 个进程。
+
+**原因**：`ctypes.windll.kernel32.GetLastError()` 返回值可能被 Python 内部调用覆盖。`Global\` 前缀在非管理员下创建失败但 `CreateMutexW` 仍返回 handle。
+
+**解法**：改用**文件锁**（`os.open(O_CREAT|O_EXCL)`）+ PID 写入 + `OpenProcess` 检查存活 + 心跳文件（30 秒过期 = 判定卡死可接管）。
+
+**避坑**：Win32 Mutex 在 PyInstaller 单文件模式下不可靠。文件锁更简单可靠，加上心跳可以区分"正常运行"和"卡死"。
+
+---
+
 ## Telegram 通知换电脑失效
 
 **问题**：旧电脑通知正常，新电脑完全收不到。
