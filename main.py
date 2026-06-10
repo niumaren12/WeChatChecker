@@ -990,11 +990,8 @@ if __name__ == "__main__":
                 _os.write(fd, str(_os.getpid()).encode())
                 return fd
             except (ValueError, OSError):
-                try:
-                    _os.remove(lock_path)
-                except OSError:
-                    pass
-                return _acquire_lock(lock_path)  # 递归重试一次
+                # 无法读取PID或删除锁文件 → 无法获得锁
+                return None
         except OSError:
             return None
 
