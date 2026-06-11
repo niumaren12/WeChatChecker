@@ -655,7 +655,9 @@ class WeChatController:
             self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
             return False
 
-        # 已有缓存窗口，只需 SetForegroundWindow（不用 ShowWindow/BringWindowToTop，破坏CEF渲染）
+        SW_RESTORE = 9  # ShowWindow 恢复命令（仅最小化时使用）
+
+        # 已有缓存窗口
         if self.wechat_window is not None:
             try:
                 hwnd = self.wechat_window.NativeWindowHandle
@@ -663,6 +665,11 @@ class WeChatController:
                     # 已经在最前，直接返回
                     if ctypes.windll.user32.GetForegroundWindow() == hwnd:
                         return True
+                    # 窗口最小化时必须 ShowWindow 恢复，否则 SetForegroundWindow 无效
+                    if ctypes.windll.user32.IsIconic(hwnd):
+                        self._emit_log("微信窗口已最小化，正在恢复...", "warn")
+                        ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+                        self._sleep(0.3)
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
                     self._sleep(0.1)
                     return True
@@ -718,9 +725,13 @@ class WeChatController:
                 self._emit_log("找不到微信主窗口（微信是否已登录且未最小化到托盘？）", "error")
                 return False
 
-            # Win32 API 激活为前台窗口（不用 ShowWindow/BringWindowToTop，破坏CEF渲染）
+            # Win32 API 激活（禁止无条件 ShowWindow/BringWindowToTop，仅最小化时恢复）
             hwnd = window.NativeWindowHandle
             if hwnd:
+                if ctypes.windll.user32.IsIconic(hwnd):
+                    self._emit_log("微信窗口已最小化，正在恢复...", "warn")
+                    ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+                    self._sleep(0.3)
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
                 self._sleep(0.1)
                 self.wechat_window = window
