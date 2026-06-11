@@ -473,24 +473,25 @@ def _mouse_click(x, y, hold=False):
     """在屏幕绝对坐标执行真实鼠标点击。
 
     使用 SetCursorPos + mouse_event 产生硬件级鼠标事件。
-    微信 CEF 下拉菜单不响应 PostMessage/SendMessage 窗口消息，
-    必须用真实鼠标事件才能触发 CEF 内部的点击处理。
+    微信 CEF 下拉菜单不响应 PostMessage/SendMessage 窗口消息。
 
-    hold=True 时不恢复鼠标位置（下拉菜单点击需保留光标让CEF识别）。
+    CEF 需要时间处理 WM_MOUSEMOVE 才能确定光标在哪个 DOM 元素上。
+    SetCursorPos 之后必须等足够多帧（150ms≈9帧），否则 mousedown 可能命中空白区。
+    hold=True 时延迟0.5s后恢复光标（让CEF处理弹窗触发），不即刻恢复也不永远停留。
     """
     orig = ctypes.wintypes.POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(orig))
 
     try:
         ctypes.windll.user32.SetCursorPos(int(x), int(y))
-        time.sleep(0.05)
+        time.sleep(0.15)  # 等 CEF 处理光标移动（9帧），确定光标下的 DOM 元素
         ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
         time.sleep(0.08)
         ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
-        time.sleep(0.2)
+        if hold:
+            time.sleep(0.5)  # 停留让 CEF 处理弹窗触发
     finally:
-        if not hold:
-            ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
+        ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
 
 
 class WeChatController:
@@ -967,33 +968,22 @@ class WeChatController:
             return ("not_found", "")
 
         try:
-            # 轮询等待弹窗（click_dropdown_item内已等2s，这里再轮询最多5次×1s）
+            # 轮询等待弹窗（FindWindowW 快且稳定，UIA 对CEF弹窗100%超时不再用）
             popup = None
-            for poll in range(5):
-                self._sleep(1.0)
+            for poll in range(3):
+                if poll > 0:
+                    self._sleep(0.5)
 
-                # Win32 FindWindowW 定位弹窗（毫秒级，不遍历UIA树）
                 popup_hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
                 if popup_hwnd:
                     try:
                         popup = auto.ControlFromHandle(popup_hwnd)
-                        self._emit_log(f"FindWindowW 找到弹窗: 添加朋友 (轮询{poll+1}/5)")
+                        self._emit_log(f"FindWindowW 找到弹窗: 添加朋友 (轮询{poll+1}/3)")
                         break
                     except Exception:
                         pass
 
-                # FindWindowW 未找到则回退 UIA 搜索
-                if popup is None:
-                    try:
-                        w = auto.WindowControl(Name="添加朋友", searchDepth=3)
-                        if self._safe_uia_exists(w, hard_timeout=1.5, label=f"popup_poll_{poll+1}"):
-                            popup = w
-                            self._emit_log(f"UIA 找到弹窗: 添加朋友 (轮询{poll+1}/5)")
-                            break
-                    except Exception:
-                        pass
-
-                if poll < 4:
+                if poll < 2:
                     self._emit_log(f"弹窗未出现，第{poll+1}次重试...")
 
             if popup is None:
