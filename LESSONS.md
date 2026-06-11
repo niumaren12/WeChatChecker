@@ -189,3 +189,15 @@
 **原因**：`SetForegroundWindow` 可能被 Windows 静默拒绝（其他进程拦截），后续 Ctrl+F/输入都发到了错误窗口。
 
 **解法**：`activate_window` 用 `GetForegroundWindow()` 验证置顶结果，失败重试；`focus_search_box` 发快捷键前检查窗口是否在前台。
+
+---
+
+## 微信窗口最小化后 OCR 截图全空白
+
+**问题**：输入微信号后每次都报"搜索无结果或无法点开详情"，日志显示窗口位置在 `left=-32000 top=-32000` 尺寸仅 `160x28`，截图区域全在负坐标。
+
+**原因**：Windows 将最小化窗口移至屏幕外负坐标（-32000）。`SetForegroundWindow` 无法恢复最小化窗口。之前 commit `acc7c67` 移除了所有 `ShowWindow(SW_RESTORE)` 以防破坏 CEF 渲染，但没考虑窗口已最小化的场景。
+
+**解法**：`activate_window()` 中加 `IsIconic(hwnd)` 检测 — 仅窗口最小化时调用 `ShowWindow(hwnd, SW_RESTORE)` 恢复，已可见窗口保持纯 `SetForegroundWindow`。
+
+**避坑**：`ShowWindow(SW_RESTORE)` 对已可见的 CEF 窗口会破坏渲染，但对最小化窗口是唯一恢复方法。用 `IsIconic()` 条件判断区分两种场景。

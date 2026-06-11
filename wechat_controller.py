@@ -527,7 +527,7 @@ class WeChatController:
             if self._stop_event and self._stop_event.is_set():
                 return
             if self._pause_event and self._pause_event.is_set():
-                self._pause_event.wait(timeout=0.1)  # 暂停中，每0.1s检查继续信号
+                time.sleep(0.1)  # Event已set，wait()不阻塞，用sleep防空转
                 continue
             remaining = seconds - elapsed
             time.sleep(min(interval, remaining))

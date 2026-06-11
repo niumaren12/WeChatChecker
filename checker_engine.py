@@ -602,7 +602,7 @@ class CheckerEngine:
             if self._pause_event.is_set():
                 remaining = max(0, seconds - elapsed)
                 self._emit_status(f"已暂停（剩余 {int(remaining)}秒）")
-                self._pause_event.wait(timeout=0.2)
+                time.sleep(0.2)  # Event已set，wait()不阻塞，用sleep防空转
                 continue
 
             time.sleep(interval)

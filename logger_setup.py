@@ -122,14 +122,17 @@ def setup_logger(name="WeChatChecker"):
     # 强制立即刷新：每条日志直接写入磁盘，防止程序卡死时日志丢失
     class _FlushFilter(logging.Filter):
         """每条日志立即刷盘"""
+        def __init__(self, handler):
+            super().__init__()
+            self._handler = handler
         def filter(self, record):
             try:
-                file_handler.flush()
+                self._handler.flush()
             except Exception:
                 pass
             return True
 
-    file_handler.addFilter(_FlushFilter())
+    file_handler.addFilter(_FlushFilter(file_handler))
 
     return logger
 
