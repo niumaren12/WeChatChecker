@@ -655,7 +655,8 @@ class WeChatController:
             self._emit_log("uiautomation 不可用，无法操作微信窗口", "error")
             return False
 
-        SW_RESTORE = 9  # ShowWindow 恢复命令（仅最小化时使用）
+        SW_RESTORE = 9   # ShowWindow 恢复最小化窗口
+        SW_SHOW = 5      # ShowWindow 显示隐藏窗口（托盘）
 
         # 已有缓存窗口
         if self.wechat_window is not None:
@@ -665,10 +666,14 @@ class WeChatController:
                     # 已经在最前，直接返回
                     if ctypes.windll.user32.GetForegroundWindow() == hwnd:
                         return True
-                    # 窗口最小化时必须 ShowWindow 恢复，否则 SetForegroundWindow 无效
+                    # 窗口最小化或隐藏时必须 ShowWindow，否则 SetForegroundWindow 无效
                     if ctypes.windll.user32.IsIconic(hwnd):
                         self._emit_log("微信窗口已最小化，正在恢复...", "warn")
                         ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+                        self._sleep(0.3)
+                    elif not ctypes.windll.user32.IsWindowVisible(hwnd):
+                        self._emit_log("微信窗口已隐藏(托盘)，正在显示...", "warn")
+                        ctypes.windll.user32.ShowWindow(hwnd, SW_SHOW)
                         self._sleep(0.3)
                     ctypes.windll.user32.SetForegroundWindow(hwnd)
                     self._sleep(0.1)
@@ -725,12 +730,16 @@ class WeChatController:
                 self._emit_log("找不到微信主窗口（微信是否已登录且未最小化到托盘？）", "error")
                 return False
 
-            # Win32 API 激活（禁止无条件 ShowWindow/BringWindowToTop，仅最小化时恢复）
+            # Win32 API 激活（禁止无条件 ShowWindow/BringWindowToTop，仅最小化/隐藏时恢复）
             hwnd = window.NativeWindowHandle
             if hwnd:
                 if ctypes.windll.user32.IsIconic(hwnd):
                     self._emit_log("微信窗口已最小化，正在恢复...", "warn")
                     ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+                    self._sleep(0.3)
+                elif not ctypes.windll.user32.IsWindowVisible(hwnd):
+                    self._emit_log("微信窗口已隐藏(托盘)，正在显示...", "warn")
+                    ctypes.windll.user32.ShowWindow(hwnd, SW_SHOW)
                     self._sleep(0.3)
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
                 self._sleep(0.1)
