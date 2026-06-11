@@ -82,22 +82,31 @@ tests/                           # 单元测试（仅 config_manager、ip_switch
 ### 检查流程（单号）
 
 ```
-激活窗口（验证前景）→ Ctrl+F 搜索 → 输入微信号
-→ OCR 截图搜索框下方（一次OCR，多关键词共享结果）→ 鼠标点击下拉项
-→ 两级UIA搜索定位弹窗（`_safe_uia_exists` 防COM死锁）→ OCR 截图弹窗 → 7关键字回退判断状态
-→ 关闭弹窗（ESC×3 + Win32 FindWindowW验证 + 鼠标点击备用）→ 清空搜索框
+激活窗口（仅 SetForegroundWindow，不用 ShowWindow/BringWindowToTop 破坏 CEF）→
+Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多关键词共享）→ 鼠标点击下拉项
+→ 弹窗检测（Win32 FindWindowW 优先 → UIA WindowControl 回退）→ OCR 截图弹窗 → 正常/频繁/异常判断
+→ 关闭弹窗（ESC×3 每次先 FindWindowW 确认存在 → 鼠标点击备用）→ 清空搜索框
 ```
 
-### 弹窗两级搜索
+### 弹窗检测（check_popup_status）
 
-微信"添加朋友"面板不是独立顶层窗口（CEF 渲染），需两级搜索。**`check_popup_status()` 和 `close_popup()` 必须使用相同搜索逻辑**：
+- 第1层：Win32 `FindWindowW(None, "添加朋友")` → `ControlFromHandle`（毫秒级，不遍历 UIA 树）
+- 回退：UIA `WindowControl(Name="添加朋友", searchDepth=3)` + `_safe_uia_exists`（CEF 弹窗可能不暴露 Win32 标题）
+- 不再使用 PaneControl 第二级搜索
 
-1. `WindowControl(Name="添加朋友", searchDepth=3)` — 深层独立窗口
-2. `self.wechat_window.PaneControl(Name="添加朋友", searchDepth=5)` — 主窗口内面板
+### 弹窗关闭（close_popup）
 
-**UIA COM 死锁防护**：所有 `Exists()` 调用通过 `_safe_uia_exists()` 包装——独立线程执行 + `join(timeout)` 硬时限，超时放弃线程避免永久阻塞。Win32 `FindWindowW` 优先于 UIA 搜索。
+- ESC×3，每次循环开头 `FindWindowW` 确认弹窗还在 → 不在则立即 return
+- **弹窗消失后必须立即退出**，否则 ESC 打到微信主窗口 = 最小化到托盘
+- 3 次 ESC 失败后鼠标点击微信窗口左侧 15% 作为兜底
+- 不再使用 UIA 搜索验证关闭
 
-`close_popup()` 关闭策略：ESC×3（先 `SetForegroundWindow`）→ Win32 `FindWindowW` 快速验证 → 鼠标点击备用。不再用 UIA 验证关闭。
+### 窗口激活（activate_window）
+
+- **禁止 `ShowWindow(SW_RESTORE)`** — 对 CEF 应用强制恢复窗口破坏渲染
+- **禁止 `BringWindowToTop`** — 绕过正常焦点机制改 Z 序，CEF 合成器停止绘制 = 变灰
+- 只做一次 `SetForegroundWindow`，不在最前才调用
+- Win32 `FindWindowW` 优先定位 → `ControlFromHandle` 转 UIA 控件 → UIA deskstop 搜索兜底（`_safe_uia_exists`）
 
 ### OCR 关键参数
 
@@ -114,11 +123,13 @@ tests/                           # 单元测试（仅 config_manager、ip_switch
 
 - 检查循环在 daemon 子线程，GUI 回调通过 `root.after(0, ...)` 回主线程
 - 子线程启动前通过 `config_snapshot` 快照所有配置，避免与主线程并发读写
-- 等待逻辑 `_wait_with_stop()` 每 0.5s 轮询 `_stop_event`，可被停止/暂停打断
-- **`_sleep()` 同时检查 `_stop_event` 和 `_pause_event`**：长延迟(≥0.5s)每 0.2s 轮询，暂停时冻结；短延迟(<0.5s)直接 `time.sleep()` 避免精度损失
-- `pytesseract.image_to_data()` 是阻塞 C 调用，期间 `_sleep` 也无法中断。OCR 前后必须检查停止/暂停信号
+- `_sleep(seconds)` — 短延迟(<0.5s)直接 `time.sleep()`，长延迟每 0.2s 轮询 `_stop_event` 和 `_pause_event`
+- 暂停时 `_sleep` 内 `_pause_event.wait()` 冻结等待，继续后恢复；停止时立即返回
+- `_wait_with_stop()` 每 0.5s 轮询停止/暂停，暂停时倒计时冻结
+- `pytesseract.image_to_data()` 是阻塞 C 调用，OCR 前后必须检查停止/暂停信号
 - uiautomation 底层用 Windows COM，`_run_check_loop` 开头必须调用 `CoInitializeEx(None, 2)`
-- 单实例锁：文件锁 `.instance.lock`（PID） + 心跳文件 `.instance.heartbeat`（每轮/每批更新，30秒过期=判定卡死可接管）
+- 单实例锁：文件锁 `.instance.lock`（PID） + 心跳文件 `.instance.heartbeat`（每轮/每批更新，30s 过期=卡死可接管）
+- `_acquire_lock` 递归改为 `return None`（防止 `PermissionError` → 无限递归爆栈）
 
 ### 跨层日志回调
 
@@ -126,7 +137,7 @@ tests/                           # 单元测试（仅 config_manager、ip_switch
 
 ### 窗口句柄缓存
 
-首次通过 Win32 `FindWindowW` 定位微信窗口 → `ControlFromHandle` 转 UIA 控件并缓存。后续用 Win32 `IsWindow` 验证 + `ShowWindow`/`SetForegroundWindow` 激活。`FindWindowW` 失败才回退到 UIA deskstop-level 搜索（`_safe_uia_exists` 包装）。
+首调用 Win32 `FindWindowW` 定位微信窗口 → `ControlFromHandle` 转 UIA 控件并缓存。后续直接用 Win32 `IsWindow` 验证缓存有效性，`SetForegroundWindow`（仅一次，不重试）激活。`FindWindowW` 失败回退 UIA 搜索（`_safe_uia_exists` 包装）。
 
 ### 窗口激活验证
 
@@ -223,10 +234,12 @@ Tesseract 打包：CI 中 `choco install tesseract-ocr` → 复制 exe+dll → �
 > 详细踩坑记录见项目根目录 `LESSONS.md`。以下仅列架构层面的关键约束。
 
 - **不要硬编码像素坐标** — 用窗口比例计算截图区域
-- **不要手写固定阈值二值化** — Tesseract 自带自适应二值化，多通道回退是跨机器兼容关键
+- **不要手写固定阈值二值化** — Tesseract 自带自适应二值化，三通道回退是跨机器兼容关键
 - **鼠标点击用硬件事件** — `SetCursorPos`+`mouse_event`，CEF 不响应窗口消息
-- **等待必须可中断** — `_sleep()` 同时检查 stop/pause，短延迟直接 sleep 避免精度损失
-- **OCR 结果共享** — 同一张截图只扫一次，多关键词匹配同一份 `entries/rows/full_text`
-- **UIA 必须有硬超时** — `_safe_uia_exists()` 独立线程 + `join(timeout)`，COM 死锁时放弃线程
-- **Win32 API 优先于 UIA** — `FindWindowW` 毫秒级无 COM 依赖，`close_popup` 用 Win32 验证代替 UIA 搜索
-- **`_check_popup_status` 首个 title 超时就跳** — 不用试完 5 个 title
+- **等待必须可中断** — `_sleep()` 同时检查 stop/pause，短延迟直接 sleep
+- **OCR 结果共享** — 同一张截图只 OCR 一次，多关键词匹配同一份 entries/rows/full_text
+- **UIA 必须有硬超时** — `_safe_uia_exists()` 独立线程+`join(timeout)` 防止 COM 死锁
+- **Win32 API 优先于 UIA** — `FindWindowW` 毫秒级无 COM 依赖，不影响 CEF 渲染
+- **禁止 ShowWindow+BringWindowToTop** — CEF 应用 Z 序变更 = 合成器停绘 = 变灰
+- **弹窗关闭立即退出循环** — 弹窗没了继续发 ESC 打到微信主窗口 = 最小化到托盘
+- **单实例锁不能递归** — `PermissionError` → 递归 → 同错 → 无限栈溢出
