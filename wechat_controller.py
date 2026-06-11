@@ -469,27 +469,28 @@ def _ocr_contains_text(image, target_text, glog=None):
     return False
 
 
-def _mouse_click(x, y):
+def _mouse_click(x, y, hold=False):
     """在屏幕绝对坐标执行真实鼠标点击。
 
     使用 SetCursorPos + mouse_event 产生硬件级鼠标事件。
     微信 CEF 下拉菜单不响应 PostMessage/SendMessage 窗口消息，
     必须用真实鼠标事件才能触发 CEF 内部的点击处理。
+
+    hold=True 时不恢复鼠标位置（下拉菜单点击需保留光标让CEF识别）。
     """
-    # 保存当前鼠标位置，点击后恢复
     orig = ctypes.wintypes.POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(orig))
 
     try:
         ctypes.windll.user32.SetCursorPos(int(x), int(y))
-        time.sleep(0.03)
+        time.sleep(0.05)
         ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
-        time.sleep(0.05)
+        time.sleep(0.08)
         ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
-        time.sleep(0.05)
+        time.sleep(0.2)
     finally:
-        # 恢复鼠标位置
-        ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
+        if not hold:
+            ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
 
 
 class WeChatController:
@@ -926,7 +927,7 @@ class WeChatController:
                                 time.sleep(0.15)
                             except Exception:
                                 pass
-                        _mouse_click(cx, cy)
+                        _mouse_click(cx, cy, hold=True)
                         self._sleep(2.0)
                         return True
 
@@ -968,28 +969,34 @@ class WeChatController:
             return ("not_found", "")
 
         try:
-            # 等待弹窗出现（click_dropdown_item内已等2s，这里0.5s足够）
-            self._sleep(0.5)
-
-            # Win32 FindWindowW 定位弹窗（毫秒级，不遍历UIA树，不干扰CEF渲染）
+            # 轮询等待弹窗（click_dropdown_item内已等2s，这里再轮询最多5次×1s）
             popup = None
-            popup_hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
-            if popup_hwnd:
-                try:
-                    popup = auto.ControlFromHandle(popup_hwnd)
-                    self._emit_log(f"FindWindowW 找到弹窗: 添加朋友")
-                except Exception:
-                    pass
+            for poll in range(5):
+                self._sleep(1.0)
 
-            # FindWindowW 未找到则回退 UIA 搜索（CEF弹窗可能不暴露Win32标题）
-            if popup is None:
-                try:
-                    w = auto.WindowControl(Name="添加朋友", searchDepth=3)
-                    if self._safe_uia_exists(w, hard_timeout=1.5, label="popup_WinCtl:添加朋友"):
-                        popup = w
-                        self._emit_log(f"UIA 找到弹窗: 添加朋友")
-                except Exception:
-                    pass
+                # Win32 FindWindowW 定位弹窗（毫秒级，不遍历UIA树）
+                popup_hwnd = ctypes.windll.user32.FindWindowW(None, "添加朋友")
+                if popup_hwnd:
+                    try:
+                        popup = auto.ControlFromHandle(popup_hwnd)
+                        self._emit_log(f"FindWindowW 找到弹窗: 添加朋友 (轮询{poll+1}/5)")
+                        break
+                    except Exception:
+                        pass
+
+                # FindWindowW 未找到则回退 UIA 搜索
+                if popup is None:
+                    try:
+                        w = auto.WindowControl(Name="添加朋友", searchDepth=3)
+                        if self._safe_uia_exists(w, hard_timeout=1.5, label=f"popup_poll_{poll+1}"):
+                            popup = w
+                            self._emit_log(f"UIA 找到弹窗: 添加朋友 (轮询{poll+1}/5)")
+                            break
+                    except Exception:
+                        pass
+
+                if poll < 4:
+                    self._emit_log(f"弹窗未出现，第{poll+1}次重试...")
 
             if popup is None:
                 self._emit_log("未找到弹窗，点击可能未生效")
@@ -1214,7 +1221,7 @@ class WeChatController:
             if self._pause_event and self._pause_event.is_set():
                 return ("paused", "")
 
-            # 5. 检测弹窗状态
+            # 5. 检测弹窗状态（已内置5次轮询，每次1s，共5s）
             status, detail = self.check_popup_status(wechat_id)
 
             # OCR/UIA 搜索期间用户可能点了停止或暂停
@@ -1222,6 +1229,29 @@ class WeChatController:
                 return ("error", "用户停止")
             if self._pause_event and self._pause_event.is_set():
                 return ("paused", "")
+
+            # 弹窗未找到：重试一次完整点击（可能是CEF渲染延迟/光标移开导致点击未生效）
+            if status == "not_found":
+                self._emit_log("弹窗未找到，重试点击一次...")
+                # 先清搜索再重激活，确保下拉菜单状态干净
+                try:
+                    self.clear_search()
+                except Exception:
+                    pass
+                if not self.activate_window():
+                    return ("error", "无法激活微信窗口")
+                self._sleep(0.3)
+                if not self.focus_search_box():
+                    return ("error", "无法聚焦搜索框")
+                self._sleep(0.3)
+                if not self.input_wechat_id(wechat_id):
+                    return ("error", "无法输入微信号")
+                self._sleep(0.5)
+                result2 = self.click_dropdown_item()
+                if result2 is not True:
+                    self._emit_log("重试时仍无法找到下拉项，判定异常")
+                    return ("abnormal", "未检测到弹窗(重试)")
+                status, detail = self.check_popup_status(wechat_id)
 
             if status == "normal":
                 logger.info(f"[正常] {wechat_id} -> 昵称: {detail}")
