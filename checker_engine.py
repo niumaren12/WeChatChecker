@@ -594,7 +594,7 @@ class CheckerEngine:
 
     def _wait_with_stop(self, seconds, countdown_label=""):
         """等待指定秒数，可被停止/暂停打断。暂停时倒计时冻结，继续后从断点恢复。"""
-        interval = 0.5
+        interval = 0.1
         elapsed = 0.0
         last_reported = -1
         while elapsed < seconds and not self._stop_event.is_set():
@@ -602,7 +602,7 @@ class CheckerEngine:
             if self._pause_event.is_set():
                 remaining = max(0, seconds - elapsed)
                 self._emit_status(f"已暂停（剩余 {int(remaining)}秒）")
-                self._pause_event.wait(timeout=1.0)
+                self._pause_event.wait(timeout=0.2)
                 continue
 
             time.sleep(interval)

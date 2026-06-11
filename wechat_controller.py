@@ -520,20 +520,18 @@ class WeChatController:
         self._pause_event = event
 
     def _sleep(self, seconds):
-        """可中断的等待：短延迟直接sleep，长延迟(>=0.5s)每0.2秒检查停止/暂停"""
-        if seconds < 0.5:
-            time.sleep(seconds)
-            return
-        interval = 0.2
+        """可中断的等待：每0.1s检查停止/暂停信号，即使短延迟也能立即响应"""
+        interval = 0.1
         elapsed = 0.0
         while elapsed < seconds:
             if self._stop_event and self._stop_event.is_set():
                 return
             if self._pause_event and self._pause_event.is_set():
-                self._pause_event.wait(timeout=0.5)  # 冻结等待
+                self._pause_event.wait(timeout=0.1)  # 暂停中，每0.1s检查继续信号
                 continue
-            time.sleep(interval)
-            elapsed += interval
+            remaining = seconds - elapsed
+            time.sleep(min(interval, remaining))
+            elapsed += min(interval, remaining)
 
     def _emit_log(self, msg, level="info"):
         """同时写 logger 和 GUI 回调（取代各处重复的 _glog 闭包）"""
