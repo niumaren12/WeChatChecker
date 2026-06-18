@@ -38,20 +38,7 @@ RATE_LIMIT_TEMPLATE = (
 
 
 # 轮次汇总消息模板
-ROUND_SUMMARY_TEMPLATE = (
-    "📊 第{round_num}轮检查完成\n"
-    "\n"
-    "✅ 正常: {success_count}\n"
-    "⚠️ 异常: {abnormal_count}\n"
-    "🚫 频繁限制: {rate_limit_count}\n"
-    "❌ 错误: {error_count}\n"
-    "📋 本轮检查: {round_checked} 个号\n"
-    "\n"
-    "⏱ 完成时间: {timestamp}\n"
-    "📈 进度: 第{round_num}/{max_rounds}轮\n"
-    "\n"
-    "来自: 微信账号检查工具"
-)
+ROUND_SUMMARY_TEMPLATE = "微信检测报告：本轮检查：{round_checked}个，所有微信号正常。"
 
 
 class TelegramNotifier:
@@ -172,10 +159,7 @@ class TelegramNotifier:
 
         return ok
 
-    def send_round_summary(self, round_num: int, max_rounds: int,
-                           success_count: int, abnormal_count: int,
-                           rate_limit_count: int, error_count: int,
-                           round_checked: int) -> bool | None:
+    def send_round_summary(self, round_checked: int) -> bool | None:
         """
         发送轮次汇总通知。线程安全，可在检查子线程中调用。
 
@@ -187,17 +171,7 @@ class TelegramNotifier:
         if not self._enabled:
             return None
 
-        timestamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
-        message = ROUND_SUMMARY_TEMPLATE.format(
-            round_num=round_num,
-            max_rounds=max_rounds,
-            success_count=success_count,
-            abnormal_count=abnormal_count,
-            rate_limit_count=rate_limit_count,
-            error_count=error_count,
-            round_checked=round_checked,
-            timestamp=timestamp,
-        )
+        message = ROUND_SUMMARY_TEMPLATE.format(round_checked=round_checked)
 
         with self._lock:
             elapsed = _time.time() - self._last_send_time
@@ -208,7 +182,7 @@ class TelegramNotifier:
             self._last_send_time = _time.time()
 
         if ok:
-            logger.info(f"Telegram 轮次汇总通知已发送 (第{round_num}轮)")
+            logger.info(f"Telegram 轮次汇总通知已发送 ({round_checked}个)")
         else:
             logger.error(f"Telegram 轮次汇总通知发送失败: {err}")
 
