@@ -44,6 +44,10 @@ DEFAULT_CONFIG = {
     "telegram_chat_id": "",
     "telegram_proxy": "",
     "telegram_round_notification_enabled": True,   # 每轮完成后发送汇总通知
+
+    # Bark 推送通知配置
+    "bark_enabled": True,                          # 异常时 Bark 推送（iOS）
+
     "telegram_message_template": (
         "🚨 异常账号告警\n"
         "\n"

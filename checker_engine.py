@@ -10,6 +10,7 @@ from logger_setup import logger
 from config_manager import ConfigManager
 from wechat_controller import WeChatController
 from telegram_notifier import TelegramNotifier
+from bark_notifier import BarkNotifier
 
 
 class CheckerEngine:
@@ -46,6 +47,11 @@ class CheckerEngine:
             bot_token=config_mgr.get("telegram_bot_token", ""),
             chat_id=config_mgr.get("telegram_chat_id", ""),
             proxy=config_mgr.get("telegram_proxy", ""),
+        )
+
+        # Bark 推送通知器
+        self._bark_notifier = BarkNotifier(
+            enabled=config_mgr.get("bark_enabled", True),
         )
 
         # 回调函数（供 GUI 使用）
@@ -203,6 +209,7 @@ class CheckerEngine:
         self._telegram_notifier.bot_token = self.config.get("telegram_bot_token", "")
         self._telegram_notifier.chat_id = self.config.get("telegram_chat_id", "")
         self._telegram_notifier.proxy = self.config.get("telegram_proxy", "")
+        self._bark_notifier.enabled = self.config.get("bark_enabled", True)
 
         # 创建 IP 切换器（如果启用）
         ip_switcher = self._create_ip_switcher(config_snapshot)
@@ -426,6 +433,8 @@ class CheckerEngine:
                             telegram_sent = self._telegram_notifier.send_rate_limit_notification(
                                 wechat_id, detail
                             )
+                            # Bark 推送通知
+                            self._bark_notifier.send_rate_limit(wechat_id, detail)
                             # 使用单独的 rate_limit 回调，避免混入异常面板
                             if self.on_rate_limit:
                                 self.on_rate_limit(wechat_id, detail, telegram_sent)
@@ -437,6 +446,8 @@ class CheckerEngine:
                             telegram_sent = self._telegram_notifier.send_abnormal_notification(
                                 wechat_id, detail
                             )
+                            # Bark 推送通知
+                            self._bark_notifier.send_abnormal(wechat_id, detail)
                             # 非阻塞通知 GUI，含通知状态
                             if self.on_abnormal:
                                 self.on_abnormal(wechat_id, detail, telegram_sent)

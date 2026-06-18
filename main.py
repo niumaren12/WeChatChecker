@@ -224,6 +224,27 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         )
         self.telegram_status_label.pack()
 
+        # ---- Bark 通知 ----
+        bark_frame = ttk.LabelFrame(left_col, text="📱 Bark 通知", padding=8)
+        bark_frame.pack(fill=tk.X, pady=(0, 6))
+
+        self.bark_enabled_var = tk.BooleanVar(value=True)
+        btn_row = ttk.Frame(bark_frame)
+        btn_row.pack(fill=tk.X)
+        ttk.Checkbutton(
+            btn_row, text="启用通知",
+            variable=self.bark_enabled_var,
+        ).pack(side=tk.LEFT)
+        self.bark_test_btn = ttk.Button(
+            btn_row, text="🔔 测试", width=8,
+            command=self._on_test_bark,
+        )
+        self.bark_test_btn.pack(side=tk.RIGHT)
+        self.bark_status_label = ttk.Label(
+            bark_frame, text="", foreground="#666666", font=("微软雅黑", 8)
+        )
+        self.bark_status_label.pack()
+
         # Listbox + 滚动条
         listbox_frame = ttk.Frame(ids_frame)
         listbox_frame.pack(fill=tk.BOTH, expand=True)
@@ -418,6 +439,7 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.telegram_enabled_var.set(self.config.get("telegram_enabled", False))
         self.telegram_chatid_var.set(self.config.get("telegram_chat_id", ""))
         self.telegram_proxy_var.set(self.config.get("telegram_proxy", ""))
+        self.bark_enabled_var.set(self.config.get("bark_enabled", True))
         # IP 切换配置（Mixin 提供）
         self._load_ip_config_to_ui()
         # 从文件加载微信号列表到界面
@@ -453,6 +475,7 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.config.set("telegram_enabled", self.telegram_enabled_var.get())
         self.config.set("telegram_chat_id", self.telegram_chatid_var.get().strip())
         self.config.set("telegram_proxy", self.telegram_proxy_var.get().strip())
+        self.config.set("bark_enabled", self.bark_enabled_var.get())
         # IP 切换配置（Mixin 提供）
         self._save_ip_ui_to_config()
 
@@ -733,6 +756,30 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
                     )
                 self.telegram_test_btn.configure(
                     state=tk.NORMAL, text="🔄 测试"
+                )
+            self.root.after(0, _update_ui)
+
+        threading.Thread(target=_do_test, daemon=True).start()
+
+    def _on_test_bark(self):
+        """测试 Bark 推送"""
+        self.bark_test_btn.configure(state=tk.DISABLED, text="发送中...")
+        self.bark_status_label.configure(text="发送中...", foreground="#666666")
+
+        def _do_test():
+            ok, msg = self.engine._bark_notifier.send_test()
+
+            def _update_ui():
+                if ok:
+                    self.bark_status_label.configure(
+                        text="✓ 发送成功", foreground="#2e7d32"
+                    )
+                else:
+                    self.bark_status_label.configure(
+                        text=f"✗ {msg}", foreground="#c62828"
+                    )
+                self.bark_test_btn.configure(
+                    state=tk.NORMAL, text="🔔 测试"
                 )
             self.root.after(0, _update_ui)
 
