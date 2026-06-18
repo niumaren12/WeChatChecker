@@ -9,9 +9,7 @@ build/
 # 日志
 logs/
 
-# 配置文件（含敏感信息，本地保留）
-config.json
-
+# 配置文件已纳入版本管理（私有仓库，不公开）
 # 系统
 .DS_Store
 Thumbs.db

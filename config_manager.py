@@ -63,7 +63,7 @@ class ConfigManager:
         self.load()
 
     def load(self):
-        """加载配置，文件不存在则创建默认配置"""
+        """加载配置，文件不存在则从内嵌数据拷贝（打包模式）或创建默认配置"""
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -76,8 +76,29 @@ class ConfigManager:
                 logger.error(f"读取配置文件失败: {e}，使用默认配置")
                 self.config = DEFAULT_CONFIG.copy()
         else:
+            # 首次运行：尝试从 PyInstaller 内嵌数据拷贝预置配置
+            embedded = self._find_embedded_config()
+            if embedded and os.path.exists(embedded):
+                import shutil
+                try:
+                    shutil.copy(embedded, CONFIG_FILE)
+                    logger.info(f"已从内嵌数据创建配置文件: {CONFIG_FILE}")
+                    return self.load()
+                except IOError as e:
+                    logger.error(f"拷贝内嵌配置失败: {e}")
             self.config = DEFAULT_CONFIG.copy()
             self.save()
+
+    @staticmethod
+    def _find_embedded_config():
+        """PyInstaller 打包模式下，查找内嵌的 config.json 路径"""
+        if getattr(sys, 'frozen', False):
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                path = os.path.join(meipass, 'config.json')
+                if os.path.exists(path):
+                    return path
+        return None
 
     def save(self):
         """保存配置到文件"""

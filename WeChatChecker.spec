@@ -7,6 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('wechat_ids.txt', '.'),
+        ('config.json', '.'),
     ],
     hiddenimports=[
         'wechat_controller',
