@@ -62,8 +62,13 @@ class ConfigManager:
         self.config = {}
         self.load()
 
+    # 从内嵌配置中取值优先的关键字段（首次部署即有值，不应为空）
+    _CRITICAL_FIELDS = ["telegram_bot_token", "telegram_chat_id"]
+
     def load(self):
-        """加载配置，文件不存在则从内嵌数据拷贝（打包模式）或创建默认配置"""
+        """加载配置。已有文件则读取；不存在或无关键字段则从内嵌数据合并。"""
+        embedded = self._find_embedded_config()
+
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -72,12 +77,13 @@ class ConfigManager:
                 for key, val in DEFAULT_CONFIG.items():
                     if key not in self.config:
                         self.config[key] = val
+                # 关键字段为空时，从内嵌配置合并
+                if embedded:
+                    self._merge_embedded(embedded)
             except (json.JSONDecodeError, IOError) as e:
                 logger.error(f"读取配置文件失败: {e}，使用默认配置")
                 self.config = DEFAULT_CONFIG.copy()
         else:
-            # 首次运行：尝试从 PyInstaller 内嵌数据拷贝预置配置
-            embedded = self._find_embedded_config()
             if embedded and os.path.exists(embedded):
                 import shutil
                 try:
@@ -88,6 +94,24 @@ class ConfigManager:
                     logger.error(f"拷贝内嵌配置失败: {e}")
             self.config = DEFAULT_CONFIG.copy()
             self.save()
+
+    def _merge_embedded(self, embedded_path):
+        """内嵌配置中的关键字段覆盖当前配置的空值，并写回文件"""
+        try:
+            with open(embedded_path, "r", encoding="utf-8") as f:
+                embedded_cfg = json.load(f)
+            changed = False
+            for key in self._CRITICAL_FIELDS:
+                current = self.config.get(key, "")
+                embedded_val = embedded_cfg.get(key, "")
+                if (not current or not str(current).strip()) and embedded_val:
+                    self.config[key] = embedded_val
+                    changed = True
+            if changed:
+                self.save()
+                logger.info("已从内嵌配置补充关键字段（telegram_bot_token/chat_id）")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"读取内嵌配置失败: {e}")
 
     @staticmethod
     def _find_embedded_config():
