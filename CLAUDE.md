@@ -84,15 +84,14 @@ tests/                           # 单元测试（仅 config_manager、ip_switch
 ```
 激活窗口（仅 SetForegroundWindow，不用 ShowWindow/BringWindowToTop 破坏 CEF）→
 Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多关键词共享）→ 鼠标点击下拉项
-→ 弹窗检测（Win32 FindWindowW 优先 → UIA WindowControl 回退）→ OCR 截图弹窗 → 正常/频繁/异常判断
+→ 弹窗检测（Win32 FindWindowW × 3 轮询）→ OCR 截图弹窗 → 正常/频繁/异常判断
 → 关闭弹窗（ESC×3 每次先 FindWindowW 确认存在 → 鼠标点击备用）→ 清空搜索框
 ```
 
 ### 弹窗检测（check_popup_status）
 
-- 第1层：Win32 `FindWindowW(None, "添加朋友")` → `ControlFromHandle`（毫秒级，不遍历 UIA 树）
-- 回退：UIA `WindowControl(Name="添加朋友", searchDepth=3)` + `_safe_uia_exists`（CEF 弹窗可能不暴露 Win32 标题）
-- 不再使用 PaneControl 第二级搜索
+- Win32 `FindWindowW(None, "添加朋友")` → `ControlFromHandle`（毫秒级，不遍历 UIA 树）
+- 最多 3 次轮询 × 0.5s 间隔（UIA 对 CEF 弹窗 100% 超时，不再作为回退）
 
 ### 弹窗关闭（close_popup）
 
@@ -103,10 +102,11 @@ Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多�
 
 ### 窗口激活（activate_window）
 
-- **禁止 `ShowWindow(SW_RESTORE)`** — 对 CEF 应用强制恢复窗口破坏渲染
+- **禁止 `ShowWindow(SW_RESTORE)` 用于已可见窗口** — 对 CEF 应用强制恢复窗口破坏渲染
 - **禁止 `BringWindowToTop`** — 绕过正常焦点机制改 Z 序，CEF 合成器停止绘制 = 变灰
-- 只做一次 `SetForegroundWindow`，不在最前才调用
-- Win32 `FindWindowW` 优先定位 → `ControlFromHandle` 转 UIA 控件 → UIA deskstop 搜索兜底（`_safe_uia_exists`）
+- **仅最小化时** `IsIconic(hwnd)` → `ShowWindow(hwnd, SW_RESTORE)` 恢复；已可见窗口只用 `SetForegroundWindow`
+- Win32 `FindWindowW` 优先定位 → `ControlFromHandle` 转 UIA 控件 → UIA desktop 搜索兜底（`_safe_uia_exists`）
+- `SetForegroundWindow` 可能被 Windows 静默拒绝，用 `GetForegroundWindow()` 验证结果并重试
 
 ### OCR 关键参数
 
@@ -123,9 +123,8 @@ Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多�
 
 - 检查循环在 daemon 子线程，GUI 回调通过 `root.after(0, ...)` 回主线程
 - 子线程启动前通过 `config_snapshot` 快照所有配置，避免与主线程并发读写
-- `_sleep(seconds)` — 短延迟(<0.5s)直接 `time.sleep()`，长延迟每 0.2s 轮询 `_stop_event` 和 `_pause_event`
-- 暂停时 `_sleep` 内 `_pause_event.wait()` 冻结等待，继续后恢复；停止时立即返回
-- `_wait_with_stop()` 每 0.5s 轮询停止/暂停，暂停时倒计时冻结
+- `_sleep(seconds)` — 每 0.1s 轮询 `_stop_event` 和 `_pause_event`，暂停时 `time.sleep(0.1)` 防空转（`Event` 已 set，`wait()` 不阻塞）
+- `_wait_with_stop()` 每 0.1s 轮询停止/暂停，暂停时 `time.sleep(0.2)` 冻结倒计时
 - `pytesseract.image_to_data()` 是阻塞 C 调用，OCR 前后必须检查停止/暂停信号
 - uiautomation 底层用 Windows COM，`_run_check_loop` 开头必须调用 `CoInitializeEx(None, 2)`
 - 单实例锁：文件锁 `.instance.lock`（PID） + 心跳文件 `.instance.heartbeat`（每轮/每批更新，30s 过期=卡死可接管）
@@ -139,9 +138,6 @@ Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多�
 
 首调用 Win32 `FindWindowW` 定位微信窗口 → `ControlFromHandle` 转 UIA 控件并缓存。后续直接用 Win32 `IsWindow` 验证缓存有效性，`SetForegroundWindow`（仅一次，不重试）激活。`FindWindowW` 失败回退 UIA 搜索（`_safe_uia_exists` 包装）。
 
-### 窗口激活验证
-
-`SetForegroundWindow` 可能被 Windows 静默拒绝。`activate_window` 用 `GetForegroundWindow()` 验证结果并重试；`focus_search_box` 发 Ctrl+F 前确认窗口在前台。
 
 ## GUI 布局（左右分栏）
 
@@ -188,7 +184,7 @@ Ctrl+F 搜索 → 输入微信号 → OCR 截图搜索框下方（一次OCR多�
 
 ## Telegram 通知
 
-`telegram_notifier.py` — 标准库 `urllib.request`，无外部依赖。Bot Token 硬编码在模块顶部。
+`telegram_notifier.py` — 标准库 `urllib.request`，无外部依赖。Bot Token 和 Chat ID 从 `config.json` 读取（首次运行从内嵌配置自动补全）。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -208,9 +204,17 @@ GUI Listbox + 添加/删除/导入/清空/拖拽排序（5px阈值，`fleur` 光
 
 ## PyInstaller 打包
 
-正式入口是 `WeChatChecker.spec`。spec 显式声明 `hiddenimports`，`datas` 将 `tesseract_bundle/`（exe+dll+tessdata/chi_sim.traineddata）打入 exe。`hooks/hook-wechat_controller.py` 强制收集 wechat_controller 模块。
+正式入口是 `WeChatChecker.spec`。spec 显式声明 `hiddenimports`，`datas` 将 `tesseract_bundle/`（exe+dll+tessdata/chi_sim.traineddata）以及 `config.json`、`wechat_ids.txt` 打入 exe。
 
 Tesseract 打包：CI 中 `choco install tesseract-ocr` → 复制 exe+dll → 下载中文语言包 → spec 打入 bundle → 运行时 `_get_tesseract_path()` 自动解压。
+
+### 内嵌 config.json 自动补全
+
+`config.json` 随 exe 打包（`sys._MEIPASS` 中）。`ConfigManager.load()` 启动时：
+- **文件不存在** → 从内嵌 config.json 复制到 exe 目录
+- **关键字段为空**（`telegram_bot_token`、`telegram_chat_id`）→ 从内嵌配置合并覆盖，写回文件
+
+这意味着首次部署只需发 exe，无需手动配置 Token。后续 GUI 修改的配置保存在 exe 目录的 config.json 中，不受升级影响。
 
 ## CI/CD
 
@@ -241,5 +245,6 @@ Tesseract 打包：CI 中 `choco install tesseract-ocr` → 复制 exe+dll → �
 - **UIA 必须有硬超时** — `_safe_uia_exists()` 独立线程+`join(timeout)` 防止 COM 死锁
 - **Win32 API 优先于 UIA** — `FindWindowW` 毫秒级无 COM 依赖，不影响 CEF 渲染
 - **禁止 ShowWindow+BringWindowToTop** — CEF 应用 Z 序变更 = 合成器停绘 = 变灰
+- **但最小化窗口必须 ShowWindow(SW_RESTORE)** — `IsIconic()` 检测后条件恢复，是唯一恢复最小化窗口的方法
 - **弹窗关闭立即退出循环** — 弹窗没了继续发 ESC 打到微信主窗口 = 最小化到托盘
 - **单实例锁不能递归** — `PermissionError` → 递归 → 同错 → 无限栈溢出
