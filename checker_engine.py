@@ -120,6 +120,8 @@ class CheckerEngine:
             "ip_switch_timeout": self.config.get("ip_switch_timeout", 30),
             "ip_switch_verify_url": self.config.get("ip_switch_verify_url", "https://api.ipify.org"),
             "ip_switch_advance_seconds": self.config.get("ip_switch_advance_seconds", 300),
+            # Telegram 通知配置
+            "telegram_round_notification_enabled": self.config.get("telegram_round_notification_enabled", True),
         }
 
     def _create_ip_switcher(self, cfg):
@@ -318,6 +320,7 @@ class CheckerEngine:
         try:
             while not self._stop_event.is_set() and round_num < max_rounds:
                 round_num += 1
+                round_start_idx = len(self.checked_accounts)  # 本轮开始前的累计数，用于轮次统计
                 self._update_heartbeat()
                 self.wechat.wechat_window = None  # 每轮强制刷新 UIA 缓存，避免脏控件树
 
@@ -490,6 +493,23 @@ class CheckerEngine:
                         f"====== 第 {round_num} 轮完成，共检查 "
                         f"{len(self.checked_accounts)} 个号 ======"
                     )
+
+                    # 发送轮次汇总通知
+                    if cfg.get("telegram_round_notification_enabled", True):
+                        round_entries = self.checked_accounts[round_start_idx:]
+                        success_count = sum(1 for e in round_entries if e["status"] == "success")
+                        abnormal_count = sum(1 for e in round_entries if e["status"] == "abnormal")
+                        rate_limit_count = sum(1 for e in round_entries if e["status"] == "rate_limit")
+                        error_count = sum(1 for e in round_entries if e["status"] == "error")
+                        self._telegram_notifier.send_round_summary(
+                            round_num=round_num,
+                            max_rounds=max_rounds,
+                            success_count=success_count,
+                            abnormal_count=abnormal_count,
+                            rate_limit_count=rate_limit_count,
+                            error_count=error_count,
+                            round_checked=len(round_entries),
+                        )
 
                     # 最后一轮不等待，直接结束
                     if round_num >= max_rounds:

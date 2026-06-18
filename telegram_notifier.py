@@ -37,6 +37,23 @@ RATE_LIMIT_TEMPLATE = (
 )
 
 
+# 轮次汇总消息模板
+ROUND_SUMMARY_TEMPLATE = (
+    "📊 第{round_num}轮检查完成\n"
+    "\n"
+    "✅ 正常: {success_count}\n"
+    "⚠️ 异常: {abnormal_count}\n"
+    "🚫 频繁限制: {rate_limit_count}\n"
+    "❌ 错误: {error_count}\n"
+    "📋 本轮检查: {round_checked} 个号\n"
+    "\n"
+    "⏱ 完成时间: {timestamp}\n"
+    "📈 进度: 第{round_num}/{max_rounds}轮\n"
+    "\n"
+    "来自: 微信账号检查工具"
+)
+
+
 class TelegramNotifier:
     """Telegram Bot 通知发送器，线程安全"""
 
@@ -152,6 +169,48 @@ class TelegramNotifier:
             logger.info(f"Telegram 频繁限制通知已发送: {wechat_id}")
         else:
             logger.error(f"Telegram 频繁限制通知发送失败 ({wechat_id}): {err}")
+
+        return ok
+
+    def send_round_summary(self, round_num: int, max_rounds: int,
+                           success_count: int, abnormal_count: int,
+                           rate_limit_count: int, error_count: int,
+                           round_checked: int) -> bool | None:
+        """
+        发送轮次汇总通知。线程安全，可在检查子线程中调用。
+
+        Returns:
+            True  发送成功
+            False 发送失败
+            None  Telegram 功能未启用
+        """
+        if not self._enabled:
+            return None
+
+        timestamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
+        message = ROUND_SUMMARY_TEMPLATE.format(
+            round_num=round_num,
+            max_rounds=max_rounds,
+            success_count=success_count,
+            abnormal_count=abnormal_count,
+            rate_limit_count=rate_limit_count,
+            error_count=error_count,
+            round_checked=round_checked,
+            timestamp=timestamp,
+        )
+
+        with self._lock:
+            elapsed = _time.time() - self._last_send_time
+            if elapsed < self._min_interval:
+                _time.sleep(self._min_interval - elapsed)
+
+            ok, err = self._send_via_http(message)
+            self._last_send_time = _time.time()
+
+        if ok:
+            logger.info(f"Telegram 轮次汇总通知已发送 (第{round_num}轮)")
+        else:
+            logger.error(f"Telegram 轮次汇总通知发送失败: {err}")
 
         return ok
 

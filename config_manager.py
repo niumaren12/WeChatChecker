@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "telegram_bot_token": "",                 # Bot Token，从 @BotFather 获取
     "telegram_chat_id": "",
     "telegram_proxy": "",
+    "telegram_round_notification_enabled": True,   # 每轮完成后发送汇总通知
     "telegram_message_template": (
         "🚨 异常账号告警\n"
         "\n"
