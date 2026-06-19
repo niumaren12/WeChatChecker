@@ -45,7 +45,7 @@ class BarkNotifier:
         try:
             url = (
                 f"{BARK_BASE}/{urllib.parse.quote('✅ 测试消息')}"
-                "/微信账号检查工具通知正常"
+                f"/{urllib.parse.quote('微信账号检查工具通知正常')}"
             )
             urllib.request.urlopen(url, timeout=10)
             return True, "发送成功"
