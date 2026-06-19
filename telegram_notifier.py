@@ -159,7 +159,8 @@ class TelegramNotifier:
 
         return ok
 
-    def send_round_summary(self, round_checked: int) -> bool | None:
+    def send_round_summary(self, round_checked: int, normal: int = 0,
+                           abnormal: int = 0, rate_limit: int = 0, error: int = 0) -> bool | None:
         """
         发送轮次汇总通知。线程安全，可在检查子线程中调用。
 
@@ -171,7 +172,20 @@ class TelegramNotifier:
         if not self._enabled:
             return None
 
-        message = ROUND_SUMMARY_TEMPLATE.format(round_checked=round_checked)
+        message = f"微信检测报告：本轮检查 {round_checked} 个"
+        if abnormal > 0 or rate_limit > 0 or error > 0:
+            parts = []
+            if normal > 0:
+                parts.append(f"正常 {normal} 个")
+            if abnormal > 0:
+                parts.append(f"异常 {abnormal} 个")
+            if rate_limit > 0:
+                parts.append(f"频繁 {rate_limit} 个")
+            if error > 0:
+                parts.append(f"出错 {error} 个")
+            message += "，" + "，".join(parts) + "。"
+        else:
+            message += "，所有微信号正常。"
 
         with self._lock:
             elapsed = _time.time() - self._last_send_time
@@ -182,7 +196,8 @@ class TelegramNotifier:
             self._last_send_time = _time.time()
 
         if ok:
-            logger.info(f"Telegram 轮次汇总通知已发送 ({round_checked}个)")
+            detail_parts = [f"N{normal}", f"A{abnormal}", f"R{rate_limit}", f"E{error}"]
+            logger.info(f"Telegram 轮次汇总通知已发送 (共{round_checked}个, {', '.join(detail_parts)})")
         else:
             logger.error(f"Telegram 轮次汇总通知发送失败: {err}")
 

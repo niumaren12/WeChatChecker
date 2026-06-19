@@ -495,11 +495,30 @@ class CheckerEngine:
                         f"{len(self.checked_accounts)} 个号 ======"
                     )
 
-                    # 发送轮次汇总通知
-                    if cfg.get("telegram_round_notification_enabled", True):
-                        round_checked = len(self.checked_accounts) - round_start_idx
-                        if round_checked > 0:
-                            self._telegram_notifier.send_round_summary(round_checked=round_checked)
+                    # 统计本轮各状态数量，发送轮次汇总通知
+                    round_checked = len(self.checked_accounts) - round_start_idx
+                    if round_checked > 0 and cfg.get("telegram_round_notification_enabled", True):
+                        round_normal = 0
+                        round_abnormal = 0
+                        round_rate_limit = 0
+                        round_error = 0
+                        for entry in self.checked_accounts[round_start_idx:]:
+                            st = entry.get("status", "error")
+                            if st == "success":
+                                round_normal += 1
+                            elif st == "abnormal":
+                                round_abnormal += 1
+                            elif st == "rate_limit":
+                                round_rate_limit += 1
+                            else:
+                                round_error += 1
+                        self._telegram_notifier.send_round_summary(
+                            round_checked=round_checked,
+                            normal=round_normal,
+                            abnormal=round_abnormal,
+                            rate_limit=round_rate_limit,
+                            error=round_error,
+                        )
 
                     # 最后一轮不等待，直接结束
                     if round_num >= max_rounds:
