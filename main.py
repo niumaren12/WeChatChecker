@@ -341,7 +341,7 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
 
         # ---- 控制按钮 + 进度条（同行） ----
         control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill=tk.X, pady=(0, 6))
+        control_frame.pack(fill=tk.X, pady=(0, 2))
 
         self.start_btn = ttk.Button(
             control_frame, text="▶ 开始检查", width=14,
@@ -361,29 +361,31 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         )
         self.stop_btn.pack(side=tk.LEFT)
 
-        # 进度条（按钮右侧）
+        # 进度条（按钮右侧，独占剩余空间）
         self.progress_var = tk.DoubleVar(value=0)
         self.progress_bar = ttk.Progressbar(
             control_frame, variable=self.progress_var,
             maximum=100, length=200
         )
-        self.progress_bar.pack(side=tk.LEFT, padx=(12, 4))
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
 
-        self.progress_label = ttk.Label(control_frame, text="", width=8)
+        # ---- 信息行：进度 + 倒计时 + 状态（独立一行，不被挤压） ----
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=tk.X, pady=(2, 6))
+
+        self.progress_label = ttk.Label(info_frame, text="", width=8)
         self.progress_label.pack(side=tk.LEFT, padx=(0, 8))
 
-        # 倒计时标签（独立一行，不被按钮/进度条遮挡）
-        countdown_frame = ttk.Frame(main_frame)
-        countdown_frame.pack(fill=tk.X, pady=(4, 0))
+        # 倒计时（居中醒目）
         self.countdown_label = ttk.Label(
-            countdown_frame, text="", font=("微软雅黑", 12, "bold"),
+            info_frame, text="", font=("微软雅黑", 12, "bold"),
             foreground="#E67E22", anchor="center"
         )
-        self.countdown_label.pack(fill=tk.X)
+        self.countdown_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # 状态标签（最右）
+        # 状态标签（右侧）
         self.status_label = ttk.Label(
-            control_frame, text="状态: 空闲", font=("微软雅黑", 10),
+            info_frame, text="状态: 空闲", font=("微软雅黑", 10),
             foreground="#666666"
         )
         self.status_label.pack(side=tk.RIGHT)
