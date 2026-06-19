@@ -26,13 +26,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 Host win
     HostName 192.168.100.2
-    User apple
+    User dell
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 ```
 
 - 密钥：`~/.ssh/id_ed25519`
-- Windows 端公钥在 `C:\ProgramData\ssh\administrators_authorized_keys`（apple 是管理员）
+- Windows 端公钥在 `C:\ProgramData\ssh\administrators_authorized_keys`（dell 是管理员）
 - 新终端需执行 `ssh-add ~/.ssh/id_ed25519` 加载密钥到 agent
 
 ## 常用命令
