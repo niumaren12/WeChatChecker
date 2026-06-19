@@ -431,6 +431,8 @@ class CheckerEngine:
                             )
                             # Bark 推送通知
                             self._bark_notifier.send_rate_limit(wechat_id, detail)
+                            # Telegram 单条通知
+                            self._telegram_notifier.send_rate_limit_notification(wechat_id, detail)
                             if self.on_rate_limit:
                                 self.on_rate_limit(wechat_id, detail, None)
                         elif status == "abnormal":
@@ -439,6 +441,8 @@ class CheckerEngine:
                             )
                             # Bark 推送通知
                             self._bark_notifier.send_abnormal(wechat_id, detail)
+                            # Telegram 单条通知
+                            self._telegram_notifier.send_abnormal_notification(wechat_id, detail)
                             if self.on_abnormal:
                                 self.on_abnormal(wechat_id, detail, None)
                         elif status == "success":
