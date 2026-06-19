@@ -1198,10 +1198,10 @@ class WeChatController:
                             logger.warning(f"清空搜索框失败: {e}")
                         self._sleep(0.3)
                 else:
-                    return ("error", "搜索无结果或无法点开详情")
+                    return ("abnormal", "无法搜索到该账号")
             else:
-                # 重试耗尽：无下拉菜单 ≠ 账号异常，返回 error 跳过等待直接查下一个
-                return ("error", "搜索无结果或无法点开详情")
+                # 重试耗尽：3次都搜不到下拉项 → 账号被限制搜索/对方设置了权限
+                return ("abnormal", "无法搜索到该账号")
 
             # OCR/点击期间用户可能点了停止或暂停，立即退出
             if self._stop_event and self._stop_event.is_set():
