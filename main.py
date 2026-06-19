@@ -1006,10 +1006,25 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             return True  # 无心跳文件 → 认为已死
 
+    def _write_heartbeat():
+        """启动早期立即写一次心跳。
+
+        关键：必须在写锁文件 PID 之前调用。这样建立因果链——
+        新实例读到锁里的 PID ⟹ 持锁实例已写过心跳 ⟹ 新实例探活时
+        心跳必然新鲜，不会因「心跳文件不存在」误判卡死而强制接管（双开竞态）。
+        """
+        try:
+            with open(_HEARTBEAT_PATH, 'w') as f:
+                f.write(str(int(_time.time())))
+        except OSError:
+            pass
+
     def _acquire_lock(lock_path):
         """尝试获取文件锁。旧PID存活但心跳过期时判定卡死，强制接管。"""
         try:
             fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+            # 先写心跳再写 PID：见 _write_heartbeat 注释，消除新实例启动期被误判卡死的竞态
+            _write_heartbeat()
             _os.write(fd, str(_os.getpid()).encode())
             return fd  # 成功，无旧实例
         except FileExistsError:
@@ -1028,6 +1043,7 @@ if __name__ == "__main__":
                         except OSError:
                             pass
                         fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+                        _write_heartbeat()  # 先心跳后 PID，保持一致
                         _os.write(fd, str(_os.getpid()).encode())
                         return fd
                     return None  # 进程存活且心跳正常
@@ -1038,6 +1054,7 @@ if __name__ == "__main__":
                 except OSError:
                     pass
                 fd = _os.open(lock_path, _os.O_CREAT | _os.O_RDWR | _os.O_EXCL)
+                _write_heartbeat()  # 先心跳后 PID，保持一致
                 _os.write(fd, str(_os.getpid()).encode())
                 return fd
             except (ValueError, OSError):
