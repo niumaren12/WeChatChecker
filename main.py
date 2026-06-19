@@ -372,12 +372,14 @@ class WeChatCheckerApp(IPPanelMixin, AbnormalPanelMixin):
         self.progress_label = ttk.Label(control_frame, text="", width=8)
         self.progress_label.pack(side=tk.LEFT, padx=(0, 8))
 
-        # 倒计时标签（独立显示，醒目）
+        # 倒计时标签（独立一行，不被按钮/进度条遮挡）
+        countdown_frame = ttk.Frame(main_frame)
+        countdown_frame.pack(fill=tk.X, pady=(4, 0))
         self.countdown_label = ttk.Label(
-            control_frame, text="", font=("微软雅黑", 11, "bold"),
-            foreground="#E67E22", width=12
+            countdown_frame, text="", font=("微软雅黑", 12, "bold"),
+            foreground="#E67E22", anchor="center"
         )
-        self.countdown_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.countdown_label.pack(fill=tk.X)
 
         # 状态标签（最右）
         self.status_label = ttk.Label(
