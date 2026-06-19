@@ -201,3 +201,17 @@
 **解法**：`activate_window()` 中加 `IsIconic(hwnd)` 检测 — 仅窗口最小化时调用 `ShowWindow(hwnd, SW_RESTORE)` 恢复，已可见窗口保持纯 `SetForegroundWindow`。
 
 **避坑**：`ShowWindow(SW_RESTORE)` 对已可见的 CEF 窗口会破坏渲染，但对最小化窗口是唯一恢复方法。用 `IsIconic()` 条件判断区分两种场景。
+
+---
+tags: [Python, 踩坑, WeChatChecker]
+date: 2026-06-20
+project: WeChatChecker
+---
+
+## scp -r 覆盖 wechat_ids.txt
+
+**问题**：每次构建产物含默认 `wechat_ids.txt`，`scp -r` 会覆盖 Windows 上的真实微信号列表
+**原因**：spec 将 `wechat_ids.txt` 打入 exe 目录，传输时连同覆盖
+**解法**：scp 只传 `WeChatChecker.exe`，不传其他文件
+**避坑**：以后传产物到 Windows 时，手动指定单文件 `scp win:"..."`，不用 `scp -r`
+
