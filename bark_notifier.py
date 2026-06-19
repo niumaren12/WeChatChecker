@@ -21,6 +21,7 @@ class BarkNotifier:
     def _send(self, title: str, body: str):
         """HTTP GET 推送，静默失败不抛异常"""
         if not self.enabled:
+            logger.debug(f"Bark 未启用，跳过推送: {title}")
             return
         try:
             url = (
@@ -29,8 +30,9 @@ class BarkNotifier:
                 "?level=timeSensitive&sound=horn&call=1"
             )
             urllib.request.urlopen(url, timeout=10)
-        except Exception:
-            pass  # 静默失败，不中断检查流程
+            logger.info(f"Bark 推送成功: {title}")
+        except Exception as e:
+            logger.error(f"Bark 推送失败: {title} — {e}")
 
     def send_abnormal(self, wechat_id: str, reason: str):
         """异常账号告警推送"""
