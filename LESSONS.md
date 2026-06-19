@@ -203,6 +203,19 @@
 **避坑**：`ShowWindow(SW_RESTORE)` 对已可见的 CEF 窗口会破坏渲染，但对最小化窗口是唯一恢复方法。用 `IsIconic()` 条件判断区分两种场景。
 
 ---
+
+## 单实例文件锁 TOCTOU 竞态导致双开 + 日志停写
+
+**问题**：Windows 上同时存在两个 WeChatChecker 进程，`checker.log` 停在数小时前不再更新，心跳文件也停更。用户看到"日志不实时更新"。
+
+**原因**：`_acquire_lock` 的「卡死接管」逻辑有 TOCTOU 竞态。获锁成功后**先写 PID 到锁文件，稍后才在检查循环里写心跳**。新实例 B 探活时若旧实例 A 刚启动、心跳文件还不存在，`_check_heartbeat_stale()` 走 `except` 分支返回 `True`（"无心跳文件→认为已死"），误判 A 卡死 → 删锁重建 → **双开**。两进程争抢同一份 `checker.log`，一方 `os.rename` 滚动后另一方 stream 指向旧 inode，主日志文件停滞。
+
+**解法**：调整写入顺序——新增 `_write_heartbeat()` helper，**三处写 PID 之前先写一次心跳**。建立因果链：B 读到锁里 PID ⟹ A 已 `write(PID)` ⟹ A 已 `write(heartbeat)`（写心跳在写 PID 之前）⟹ B 探活时心跳必然新鲜 ⟹ B 退出。B 读不到 PID（锁文件空）⟹ `int('')` 抛 `ValueError` ⟹ 走 except ⟹ B 退出。两种情况 B 都不误接管。真卡死场景（A 拿锁 30s 不更新心跳）仍能正确接管。commit 9f594ad。
+
+**避坑**：单实例锁若用「PID + 心跳探活」模式，心跳必须在写 PID 之前落盘，否则旧实例启动期的「心跳空窗」会被新实例误判为卡死而强制接管。这是经典的 check-then-act 竞态，靠调整写入顺序建立 happens-before 因果链即可根治，无需 sleep 二次确认。另外：多进程写同一日志文件会因 `os.rename` 滚动产生 inode 错位，日志隔离不如从根上防双开。
+
+
+---
 tags: [Python, 踩坑, WeChatChecker]
 date: 2026-06-20
 project: WeChatChecker
@@ -215,3 +228,33 @@ project: WeChatChecker
 **解法**：scp 只传 `WeChatChecker.exe`，不传其他文件
 **避坑**：以后传产物到 Windows 时，手动指定单文件 `scp win:"..."`，不用 `scp -r`
 
+
+---
+tags: [Python, Windows, GUI自动化, 守护进程, WeChatChecker]
+date: 2026-06-20
+project: WeChatChecker
+---
+
+## 24h 无人值守守护架构 — GUI 自动化不能用 NSSM/服务
+
+**问题**：微信检查工具要在 Windows 上 24 小时无人值守跑，需要保证主程序崩溃/卡死能自动恢复，且系统层不干扰运行。
+
+**原因**：三重坑叠加 ——
+1. **主程序是 tkinter + uiautomation 的 GUI 自动化，必须跑在交互桌面会话（Session 1+）**。Windows 服务（含 NSSM 包裹）跑在 Session 0，没有桌面，uiautomation 找不到微信窗口直接废。所以"装个守护服务"这条路对 GUI 自动化是错的。
+2. **RDP 直接叉掉断开 → 会话变 disconnected → GUI 找不到桌面会挂**。必须用 `tscon <会话ID> /dest:console` 切到 console 保活。
+3. **主程序心跳只在"每轮开始+每批结束"更新，批次间等待 20-30 分钟期间不更新**。如果 watchdog 卡死阈值照搬单实例锁的 30s，会在批次等待时每批误杀一次。
+
+**解法**：复用主程序已有的心跳文件 `.instance.heartbeat` 做三态判断的 watchdog（`watchdog.py`）：
+- 进程不在 → 拉起 `python main.py`（用 pythonw.exe + DETACHED_PROCESS 分离，无黑窗、与 watchdog 解耦）
+- 进程在 + 心跳新鲜 → 正常不动
+- 进程在 + 心跳过期(>60min) → COM 死锁/卡死 → 杀进程树 + 拉起
+
+系统层用 `setup_keepalive.ps1` 一键配：防睡眠(powercfg /change ... 0)、防锁屏(注册表 ScreenSaveActive=0)、防更新重启(组策略 AUOptions=2 + NoAutoRebootWithLoggedOnUsers=1 + 活动时间 08-23)、任务计划程序"登录时启动 watchdog"（**关键：选 Interactive 登录而非 SYSTEM，否则落到 Session 0**）。
+
+**避坑**：
+- GUI 自动化的守护**绝不能用 Session 0 服务**，必须"开机登录 + 会话内 watchdog 拉起"。这是和命令行/headless 自动化守护最大的区别。
+- watchdog 卡死阈值必须 > `batch_interval_max` + 余量（这里 30min → 阈值设 60min），否则批次等待时不更新心跳会被误杀。先搞清主程序心跳更新的真实频率再定阈值。
+- 加崩溃风暴保护（1 小时重启超 N 次停止自动拉起），否则恶性崩溃会把日志刷爆、把 Telegram 通知刷屏，且掩盖真正的根因。
+- watchdog 拉起用 `pythonw.exe`（无控制台窗）+ `DETACHED_PROCESS`，否则 watchdog 退出会连带杀掉子进程。
+- 复用主程序已有基础设施（心跳文件、单实例锁）比另起一套健康检查更可靠——单实例锁的心跳探活接管逻辑正好和 watchdog 重启逻辑互补不冲突。
+- 「异常只通知不停止」其实主程序代码早就是这样了（`checker_engine.py` abnormal 分支只等 5s 继续），README 写的"并停止"是过时描述。24h 无人值守只需把 `config.json` 的 `sound_enabled` 设 false（避免蜂鸣到天亮），通知走 Telegram/Bark。

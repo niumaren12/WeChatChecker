@@ -7,7 +7,7 @@
   "account_interval_min": 3,
   "account_interval_max": 5,
   "max_rounds": 100,
-  "sound_enabled": true,
+  "sound_enabled": false,
   "telegram_enabled": true,
   "telegram_bot_token": "8627831778:AAFZ04aMuyDCox3Npg4ZRpBRJBotqo6Vw48",
   "telegram_chat_id": "-5089015384",

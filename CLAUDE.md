@@ -45,6 +45,16 @@ build_exe.bat                            # 一键打包（推荐，等效 pyinst
 python -m pytest tests/ -v               # 运行单元测试（仅 config_manager 和 ip_switcher，不含 Windows API）
 ```
 
+## 24h 无人值守守护
+
+主程序是 tkinter + uiautomation 的 GUI 自动化，**必须跑在交互桌面会话**，不能用 Windows 服务/NSSM（Session 0 无桌面）。守护架构：
+
+- `watchdog.py` — 守护进程，复用主程序的心跳文件（`.instance.heartbeat`）做三态判断：进程不在→拉起；进程在+心跳新鲜→正常；进程在+心跳过期→杀进程树+拉起。独立 Telegram 通知（从 config.json 读配置，不依赖主程序模块）。
+- `setup_keepalive.ps1` — Windows 一键配置：防睡眠/防锁屏/防更新重启/建"登录时启动 watchdog"任务计划程序。需管理员运行。
+- `rdp_keepalive.bat` — RDP 断开时 `tscon /dest:console` 切到 console 保活会话，避免 GUI 自动化因会话 disconnected 而挂。
+
+**关键参数**：watchdog 卡死阈值默认 3600s（60分钟），**必须 > `batch_interval_max`(30min)**，因为主程序批次间等待 20-30 分钟期间不更新心跳，阈值过小会误杀。崩溃风暴保护：1 小时内重启超 `--max-restarts-per-hour`(默认10) 次则停止自动拉起，发 Telegram 报警等人工介入。
+
 ## 架构
 
 ```
