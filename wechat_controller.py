@@ -494,6 +494,37 @@ def _mouse_click(x, y, hold=False):
         ctypes.windll.user32.SetCursorPos(orig.x, orig.y)
 
 
+def _save_popup_not_found_screenshot(wechat_id):
+    """当点击了下拉项但弹窗未出现时，保存窗口截图用于诊断"""
+    try:
+        import tempfile
+        debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        ts = int(time.time())
+        safe_id = wechat_id.replace("/", "_").replace("\\", "_") if wechat_id else "unknown"
+        filename = f"popup_not_found_{safe_id}_{ts}.png"
+        # 截取微信窗口区域的完整截图（使用 mss）
+        import mss
+        from PIL import Image
+        window_hwnd = ctypes.windll.user32.FindWindowW(None, "微信")
+        if not window_hwnd:
+            window_hwnd = ctypes.windll.user32.FindWindowW(None, "WeChat")
+        if window_hwnd:
+            r = ctypes.wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(window_hwnd, ctypes.byref(r))
+            monitor = {"left": r.left, "top": r.top, "width": r.right - r.left, "height": r.bottom - r.top}
+            with mss.mss() as sct:
+                sct_img = sct.grab(monitor)
+                img = Image.frombytes("RGB", (monitor["width"], monitor["height"]), sct_img.bgra, "raw", "BGRX")
+                img.save(os.path.join(debug_dir, filename))
+                img.close()
+            logger.info(f"弹窗未出现诊断截图已保存: {debug_dir}\\{filename}")
+        else:
+            logger.warning("无法获取微信窗口句柄，未保存诊断截图")
+    except Exception as e:
+        logger.warning(f"保存弹窗未出现诊断截图失败: {e}")
+
+
 class WeChatController:
     """微信控制器，封装所有自动化操作"""
 
@@ -843,11 +874,12 @@ class WeChatController:
             self._emit_log(f"所有输入方式均失败: SendInput={e}, 剪贴板={e2}", "error")
             return False
 
-    def click_dropdown_item(self):
+    def click_dropdown_item(self, wechat_id=""):
         """
         OCR 识别搜索下拉框中的"网络查找手机/QQ号"并点击。
         每次截图只做一次 OCR，多个关键词共用结果（之前每个关键词都重新 OCR）。
         同区域两次截图重试：第1次等2s，失败再等1.5s（应对下拉加载慢）。
+        wechat_id: 仅用于诊断截图命名，不影响点击逻辑。
         """
         self._sleep(2.0)  # 等待下拉菜单加载
 
@@ -911,7 +943,8 @@ class WeChatController:
                     first, last = _find_text_in_entries(entries, rows, target)
                     if first and last:
                         cx = region[0] + (first["x"] + last["x"] + last["w"]) // 2
-                        cy = region[1] + (first["y"] + first["h"] // 2)
+                        # Y 取匹配条目包围盒的垂直中心（与 X 逻辑一致），避免 first 为噪声碎片时偏移
+                        cy = region[1] + (first["y"] + last["y"] + last["h"]) // 2
                         # 同行拼接日志
                         for row in rows:
                             merged = "".join(e["text"] for e in row)
@@ -936,8 +969,9 @@ class WeChatController:
             finally:
                 img.close()
 
-        # 两次均失败：诊断输出
+        # 两次均失败：诊断输出 + 保存截图
         try:
+            import tempfile
             diag_img = _screenshot_region(*region)
             if diag_img is not None:
                 try:
@@ -945,6 +979,14 @@ class WeChatController:
                     if entries:
                         all_text = " | ".join(e["text"] for e in entries[:15])
                         self._emit_log(f"OCR识别到的全部文字({len(entries)}条): {all_text}", "warn")
+                    # 保存诊断截图，方便排查下拉菜单是否确实出现
+                    debug_dir = os.path.join(tempfile.gettempdir(), "wechat_ocr_debug")
+                    os.makedirs(debug_dir, exist_ok=True)
+                    ts = int(time.time())
+                    safe_id = wechat_id.replace("/", "_").replace("\\", "_") if wechat_id else "unknown"
+                    filename = f"dropdown_fail_{safe_id}_{ts}.png"
+                    diag_img.save(os.path.join(debug_dir, filename))
+                    self._emit_log(f"下拉诊断截图已保存: {debug_dir}\\{filename}")
                 finally:
                     diag_img.close()
         except Exception as e2:
@@ -1182,7 +1224,7 @@ class WeChatController:
                 self._sleep(0.5)
 
                 # 4. 点击下拉项
-                result = self.click_dropdown_item()
+                result = self.click_dropdown_item(wechat_id)
                 if result is True:
                     break  # 成功找到下拉项，继续后续流程
                 elif result == "retry":
@@ -1221,6 +1263,11 @@ class WeChatController:
             # 弹窗未找到：重试一次完整点击（可能是CEF渲染延迟/光标移开导致点击未生效）
             if status == "not_found":
                 self._emit_log("弹窗未找到，重试点击一次...")
+                # 保存微信窗口截图，帮助排查弹窗未出现的根因
+                try:
+                    _save_popup_not_found_screenshot(wechat_id)
+                except Exception:
+                    pass
                 # 先清搜索再重激活，确保下拉菜单状态干净
                 try:
                     self.clear_search()
@@ -1235,7 +1282,7 @@ class WeChatController:
                 if not self.input_wechat_id(wechat_id):
                     return ("error", "无法输入微信号")
                 self._sleep(0.5)
-                result2 = self.click_dropdown_item()
+                result2 = self.click_dropdown_item(wechat_id)
                 if result2 is not True:
                     self._emit_log("重试时仍无法找到下拉项，判定异常")
                     return ("abnormal", "未检测到弹窗(重试)")
