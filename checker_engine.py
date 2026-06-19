@@ -429,28 +429,18 @@ class CheckerEngine:
                             self._emit_log(
                                 f"[频繁] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒) — 搜索被限制，建议暂停或换IP", "warn"
                             )
-                            # 发送 Telegram 通知（频繁限制）
-                            telegram_sent = self._telegram_notifier.send_rate_limit_notification(
-                                wechat_id, detail
-                            )
                             # Bark 推送通知
                             self._bark_notifier.send_rate_limit(wechat_id, detail)
-                            # 使用单独的 rate_limit 回调，避免混入异常面板
                             if self.on_rate_limit:
-                                self.on_rate_limit(wechat_id, detail, telegram_sent)
+                                self.on_rate_limit(wechat_id, detail, None)
                         elif status == "abnormal":
                             self._emit_log(
                                 f"[异常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "warn"
                             )
-                            # 发送 Telegram 通知
-                            telegram_sent = self._telegram_notifier.send_abnormal_notification(
-                                wechat_id, detail
-                            )
                             # Bark 推送通知
                             self._bark_notifier.send_abnormal(wechat_id, detail)
-                            # 非阻塞通知 GUI，含通知状态
                             if self.on_abnormal:
-                                self.on_abnormal(wechat_id, detail, telegram_sent)
+                                self.on_abnormal(wechat_id, detail, None)
                         elif status == "success":
                             self._emit_log(
                                 f"[正常] {wechat_id}: {detail} (耗时{t_elapsed:.1f}秒)", "info"
