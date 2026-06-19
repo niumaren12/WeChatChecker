@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **Mac 上改代码** → `git commit` + `git push`
 2. **GitHub Actions 自动构建**（`build.yml`，windows-latest）
 3. **下载产物** → `gh run download <id>`
-4. **传到 Windows 测试** → `scp -r dist/WeChatChecker-Windows/* win:"Desktop/WeChatChecker/"`
+4. **传到 Windows 测试** → `scp /tmp/wechat-dist/WeChatChecker-Windows/WeChatChecker.exe win:"Desktop/WeChatChecker/"`（**只传 exe，不要 -r 否则覆盖 wechat_ids.txt！**）
 5. **SSH 远程控制** → `ssh win` 执行命令、查看日志
 
 ### SSH 配置（~/.ssh/config）
