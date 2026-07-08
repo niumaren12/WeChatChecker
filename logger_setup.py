@@ -85,6 +85,48 @@ class TimedSizeRotatingFileHandler(TimedRotatingFileHandler):
                     pass
 
 
+def _make_file_handler(log_path):
+    """创建文件 handler，并立即自检能否真正写入。
+
+    根因防护：若 checker.log 因上次进程被强杀处于损坏/只读/占用状态，
+    handler 构造或 emit 会失败（构造抛异常，emit 则被 Handler.handleError
+    静默吞掉），导致本进程所有日志全丢、进程却继续跑。这里把构造 + 试写
+    一起包进 try，任一失败就把坏文件改名隔离，用全新文件重建 handler。
+    """
+    try:
+        handler = TimedSizeRotatingFileHandler(
+            log_path, max_bytes=MAX_BYTES,
+            when="midnight", interval=1, backupCount=7, encoding="utf-8",
+        )
+        # 试写 + 强制刷盘，验证文件确实可写（构造成功不代表 emit 能成）
+        handler.stream.write("# log self-check\n")
+        handler.stream.flush()
+        return handler
+    except Exception:
+        # 坏文件：改名隔离后重建。改名失败则改用带后缀的新路径，绝不静默丢日志
+        bad_path = f"{log_path}.bad_{int(time.time())}"
+        try:
+            if os.path.exists(log_path):
+                # 先尝试恢复可写权限再改名（只读文件 os.replace 会失败）
+                try:
+                    os.chmod(log_path, 0o666)
+                except OSError:
+                    pass
+                os.replace(log_path, bad_path)
+        except OSError:
+            # 连改名都失败（占用等），退到带后缀的新文件，保证本进程能写日志
+            log_path = f"{log_path}.{int(time.time())}"
+        # 重建；若仍失败，兜底用纯 StreamHandler(stdout)，至少不丢日志
+        try:
+            handler = TimedSizeRotatingFileHandler(
+                log_path, max_bytes=MAX_BYTES,
+                when="midnight", interval=1, backupCount=7, encoding="utf-8",
+            )
+            return handler
+        except Exception:
+            return logging.StreamHandler()
+
+
 def setup_logger(name="WeChatChecker"):
     """初始化日志系统，防重复 handler"""
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -104,10 +146,8 @@ def setup_logger(name="WeChatChecker"):
     )
 
     # 文件 Handler：按天 or 5MB 滚动，保留 7 天，立即刷新每条日志
-    file_handler = TimedSizeRotatingFileHandler(
-        log_path, max_bytes=MAX_BYTES,
-        when="midnight", interval=1, backupCount=7, encoding="utf-8",
-    )
+    # 启动自检：坏文件自动隔离重建，避免日志静默丢失
+    file_handler = _make_file_handler(log_path)
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
 
